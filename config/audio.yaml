@@ -1,0 +1,33 @@
+audio_tools:
+  loud_onset:
+    sample_rate: 16000
+    flux_threshold: 0.6     
+    peak_mult: 6.0          
+    min_gap_sec: 0.4        
+
+  asr:
+    model: paraformer-zh
+    vad_model: fsmn-vad
+    punc_model: ct-punc
+    max_single_segment_time: 30000
+
+  speaker:
+    diarization_model: iic/speech_campplus_speaker-diarization_common
+    sv_model: iic/speech_campplus_sv_zh-cn_16k-common
+    asr_model: iic/SenseVoiceSmall
+    sample_rate: 16000
+    sim_threshold: 0.35
+    sample_per_spk: 5
+    min_dur: 1.0
+    max_dur: 12.0
+
+  filter:
+    ollama_url: http://127.0.0.1:11434/api/generate
+    ollama_model: qwen3:8b
+    timeout: 30
+
+  paths:
+    input: data/audio/6657_merged.wav
+    segments: data/audio/6657_segments_ai.jsonl
+    filtered_audio: data/audio/6657_ai_filtered.wav
+    segments_final: data/audio/6657_segments_final.jsonl

@@ -1,0 +1,10 @@
+{style_system}
+
+{hype_constraint}
+
+{catchphrase_hint}
+
+{player_aliases_hint}
+
+中性稿：
+{neutral_text}

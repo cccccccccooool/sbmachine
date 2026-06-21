@@ -1,0 +1,6 @@
+以下是本回合的结构化比赛数据。请严格遵守 system 指令完成分析。
+
+输出格式（务必遵守）：单个 JSON 对象 {"scenes": [{"t_start": float, "t_end": float, "scene": str, "neutral": str}, ...]}；按时间顺序扫描 keyframes，按 when.phase / when.relative_sec 切为 2~5 段；关键事件（击杀/植弹/拆弹/经济判定）必须覆盖，空窗可合并；t_start/t_end 取该段首帧/末帧的 when.video_time；每段 neutral 只写本段时间窗内的事实；纯 JSON 输出，不加 markdown 代码块。
+
+回合数据（JSON）：
+{json_payload}

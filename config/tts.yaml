@@ -1,0 +1,9 @@
+tts:
+  config: audio_service/gpt_sovits_runtime.yaml
+  output_dir: output/sbmachine/audio
+  final_audio: output/sbmachine/final_commentary.wav
+
+video:
+  make_filtered_video: false
+  clip_dir: output/sbmachine/video_clips
+  final_video: output/sbmachine/final_video.mp4

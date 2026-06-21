@@ -1,0 +1,33 @@
+{
+  "_comment": "口癖库。从主播 ASR 转写挖掘，按情绪场景分桶。Phase3b 风格模型 few-shot 注入用。",
+  "_usage": "label_commentary_pairs.py 审核时可直接追加。text 字段归一化去重。",
+  "开场/平述": [
+    {"text": "好，咱们来看这一局", "src_ts": "", "added_by": "template"},
+    {"text": "行，这局我们来看看", "src_ts": "", "added_by": "template"},
+    {"text": "这局来了", "src_ts": "", "added_by": "template"}
+  ],
+  "击杀/激动": [
+    {"text": "好家伙", "src_ts": "", "added_by": "template"},
+    {"text": "这枪太正了", "src_ts": "", "added_by": "template"},
+    {"text": "直接带走", "src_ts": "", "added_by": "template"},
+    {"text": "秒了", "src_ts": "", "added_by": "template"},
+    {"text": "炸了炸了", "src_ts": "", "added_by": "template"}
+  ],
+  "惊叹/高亮": [
+    {"text": "直接起飞", "src_ts": "", "added_by": "template"},
+    {"text": "哇这个操作", "src_ts": "", "added_by": "template"},
+    {"text": "太离谱了", "src_ts": "", "added_by": "template"}
+  ],
+  "残局/紧张": [
+    {"text": "就看他了", "src_ts": "", "added_by": "template"},
+    {"text": "心跳拉满", "src_ts": "", "added_by": "template"},
+    {"text": "悬了悬了", "src_ts": "", "added_by": "template"},
+    {"text": "能不能行啊", "src_ts": "", "added_by": "template"}
+  ],
+  "失误/惋惜": [
+    {"text": "哎呀这波", "src_ts": "", "added_by": "template"},
+    {"text": "可惜了属于是", "src_ts": "", "added_by": "template"},
+    {"text": "差一点点", "src_ts": "", "added_by": "template"},
+    {"text": "这枪没打好", "src_ts": "", "added_by": "template"}
+  ]
+}

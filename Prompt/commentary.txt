@@ -1,0 +1,61 @@
+Read this CS2 round background_info sequence and write Chinese commentary with inline emotion tags.
+Allowed tags only: [平述], [激动], [惊叹], [紧张], [惋惜].
+Use only facts present in JSON. Do not invent kills, plant/defuse, winner, HP, weapons, or player names.
+
+Full match context (read-only, for narrative coherence — focus commentary on the current round):
+{match_memory}
+
+## Core rules
+- Use only facts present in JSON. Never invent kills, positions, HP, weapons, player names, or tactical intent not present.
+- When who.view=="director": global/broadcast perspective; do NOT assume any specific player's POV.
+- When who.pov_source=="unmatched" and who.view=="player": POV player uncertain; do NOT name them.
+- When when.phase=="pre_round" or "post_round": outside live combat; do NOT treat as active firefight.
+- Rows with has_vlm=false: desc is empty. Describe ONLY from demo facts (callouts, utilities, kills). NEVER invent visual details.
+- Rows with has_vlm=true with non-empty desc: use desc for visual narration combined with demo facts.
+- Background rows (has_vlm=false) with utility throws: use for pre-fight tactical analysis.
+- Visual rows (has_vlm=true): use for highlight moments (kills, clutch, bomb events).
+
+## New event fields (use only when present and non-empty)
+
+### events.kills — enhanced fields
+- through_smoke=true: describe as "黑烟击杀" / "穿烟击杀". Only mention if field is true.
+- no_scope=true: describe as "无镜击杀". Only mention if field is true.
+- is_wallbang=true: describe as "穿墙击杀". Only mention if field is true.
+- attacker_blind=true: describe as "盲打击杀" — attacker was flashed. Only mention if true.
+- distance > 1000: long-range kill worth mentioning (AWP远距离 / 大狙). Never fabricate distance.
+
+### events.damages
+- Do NOT narrate every damage tick. Only use when tactically significant:
+  - health_after <= 15 AND that player survives to round end → "X 仅剩 N 血坚持到最后" [紧张]
+  - Large single-hit damage (health_dmg >= 90, non-lethal) → near-death context
+- Never list raw damage numbers unless they add narrative value.
+
+### events.flashes
+- duration_s > 1.5: effective flash. If the flashed player is killed within 2s → narrate as coordinated flash-kill.
+  Example: "electronic 一个有效闪，把 sh1ro 闪了近 3 秒，donk 直接跟进" [激动]
+- is_teammate=true: teammate flash → use [惋惜]. Example: "把自己队友闪了个正着"
+- Do NOT mention flashes with duration_s < 0.5 (negligible).
+
+### events.smokes_active
+- Lists smokes currently burning at this frame (pos_x/y/z, thrower, duration_s).
+- Use to describe which sightlines are blocked: "A大道烟还在，CT 视野被封死"
+- If duration_s is present, can note "烟快消散了" when duration_s < 4.
+
+### events.infernos_active
+- Lists active fire areas (centroid_x/y/z, area_approx, thrower).
+- Use centroid callout context from where.players positions to name the area.
+- area_approx: large (>500) = wide denial; small (<150) = tight point control.
+- Example: "香蕉道整个被火封住，CT 根本站不住脚" [平述]
+
+### events.c4 — enhanced fields
+- begin_defuse_tick present: defuse has started.
+- defuser_has_kit=false: defuse takes 10s instead of 5s — high tension moment.
+  Example: "他没有拆弹套件，需要 10 秒！时间够不够？" [紧张]
+- defuser_has_kit=true: "带了套件，5 秒拆完" — can still be tense if time is tight.
+
+## Style guidance
+- Natural spoken Chinese, not written/formal.
+- Emotion tags reflect the moment, not every sentence. Do not force all 6 tags.
+- hype field (if present in beats): 0-0.3=平述, 0.3-0.6=紧张/惋惜, >=0.6=激动/惊叹.
+
+{json_payload}

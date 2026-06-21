@@ -1,0 +1,29 @@
+llm:
+  backend: api              #ollama/api 模式选择
+  ollama_url: http://127.0.0.1:11434/api/generate
+
+  temperature: 0.75
+  timeout_sec: 300
+  num_ctx: 16384            # 输出已封顶，无需 32k；缩 KV 池更快更省显存
+  enable_thinking: false    # qwen3 关思考：ollama 走 options.think；api 走 system 尾 /no_think
+  repeat_penalty: 1.15      # ollama 防复读
+  repeat_last_n: 256        # ollama 防复读回看窗
+  frequency_penalty: 0.3    # api 防复读
+
+semantic:
+  model: qwen3:8b
+
+  analyst_model: qwen3:8b   # TODO: 替换为训练好的分析 adapter
+  style_model:   qwen3:8b   # TODO: 替换为训练好的风格 adapter
+ 
+  analyst_concurrent_rounds: 5  # phase3a 并发局数。
+  analyst_max_tokens: 3072
+  segment_long_rounds: true  # 长回合策略：  false(默认)=降采样关键帧到下限，单次调用（有损快);true=切多段逐段分析后合并（无损，K次调用）
+  segment_overlap_frames: 2   # 段间重叠帧（仅喂上下文，输出按归属窗去重）
+
+paths:
+  catchphrase_library: Prompt/json/catchphrase_library.json
+  commentary_demos:    Prompt/json/commentary_demos.json  
+  callouts_zh:         database/callouts_zh.json
+  terms_zh:            database/terms_zh.json
+  lineups_dir:         database/lineups

@@ -1,0 +1,9 @@
+slicer:
+  model: models/slicing/frame_type_classifier.pt
+  interval_sec: 1.0
+  min_live_sec: 20
+  bridge_gap_sec: 3
+  device: auto
+  # 当yolo出错时用的降级方案
+  timer_roi: "0.46,0.0,0.54,0.06"
+  score_roi: "0.42,0.0,0.58,0.08"

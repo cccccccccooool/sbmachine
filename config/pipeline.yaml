@@ -1,0 +1,55 @@
+profile: lite
+runtime:
+  manage_services: true      # true=单容器/ false=多容器
+  compose_file: docker-compose.yml  # 多容器模式用的 compose 文件
+  one_model_at_a_time: true   # 单卡错峰：每段开始前启服务，结束后停服务
+  use_gpu_guard: false         # 调试功能，请勿开启
+
+  services:
+    vlm:
+      enabled: true
+      start: "python tools/simple_vlm_server.py"
+      startup_timeout_sec: 90
+    ollama:
+      enabled: true
+      start: "ollama serve"
+      startup_timeout_sec: 30
+
+    sovits:
+      enabled: true
+      start: "bash -c 'cd /opt/GPT-SoVITS && python api_v2.py -a 0.0.0.0 -p 9880'"
+      startup_timeout_sec: 90
+      # host/port 自动从 audio_service/gpt_sovits_runtime.yaml api.host/port 读取
+
+# 阶段开关
+phases:
+  demo_parse: false          
+  video_marking: false      
+  preprocess_slice: false    
+  phase2_vision: false
+  phase3_semantic: true
+  phase4_assemble: true
+
+# Debug 开关：
+debug:
+  phase3: false             
+
+paths:
+  demo: data/raw/match.dem            # .dem 文件（demo_parse 输入）
+  demo_output_dir: output/demo        # demo 工件输出目录
+  video: data/raw/demo.mp4
+  map_name: Unknown
+  hud_detections_jsonl: examples/offline/demo_detections.jsonl  # 标记检测 JSONL（无 segments 时用）
+  segments_json:                      # 已有片段 JSON（提供则跳过 round_segmenter）
+  clip_dir:                           # 可选：切出每个小局视频到该目录
+
+  # ── 中间/最终产物 ──
+  rounds_json: output/sbmachine/rounds.json
+  round_list_json: output/sbmachine/round_list.json
+  segments_out_json: output/sbmachine/segments.json
+  rounds_with_vision_json: output/sbmachine/rounds_with_vision.json
+  rounds_with_neutral_json: output/sbmachine/rounds_with_neutral.json
+  rounds_with_commentary_json: output/sbmachine/rounds_with_commentary.json
+  rounds_final_json: output/sbmachine/rounds_final.json
+  commentary_json: output/sbmachine/commentary.json
+  assemble_manifest_json: output/sbmachine/assemble_manifest.json

@@ -1,0 +1,26 @@
+# 本项目音频清洗、轻量感知和 GPT-SoVITS 数据准备依赖。
+# GPT-SoVITS 本体请按 docs/训练与部署流程.md 单独安装。
+imageio-ffmpeg
+requests==2.32.5
+pyyaml==6.0.2
+numpy>=1.24.0,<=2.2.6
+opencv-python==4.13.0.92
+rapidocr-onnxruntime==1.4.4
+soundfile==0.13.1
+librosa>=0.10.0
+funasr
+modelscope
+demucs
+fastapi==0.115.6
+python-multipart==0.0.32
+uvicorn==0.49.0
+pydantic==2.12.5
+torchcodec
+torch>=2.4.0
+torchvision>=0.19.0
+tqdm==4.67.3
+ultralytics==8.4.62
+rapidfuzz
+scikit-learn
+scipy
+tenacity==9.1.2

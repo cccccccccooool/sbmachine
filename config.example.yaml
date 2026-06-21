@@ -1,0 +1,4 @@
+secrets:
+  openai_api_key: "sk-****"
+  openai_base_url: "url"   
+  openai_model: "model_name"

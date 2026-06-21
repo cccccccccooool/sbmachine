@@ -1,0 +1,127 @@
+{
+  "_comment": "情绪评分规则集。全部从此文件读取，代码无硬编码数值。",
+
+  "decay_tau_sec": 8.0,
+
+  "emotions": {
+    "_comment": "五种情绪定义。source=round 仅由本局 hype 驱动；source=global 仅由全局积累驱动；source=both 两者都参考。全局积累规则在 global_accumulation 中。",
+    "平淡": { "source": "round",  "threshold": 0.00 },
+    "激动": { "source": "round",  "threshold": 0.35 },
+    "尖叫": { "source": "round",  "threshold": 0.72 },
+    "沮丧": { "source": "global", "threshold": 0.40 },
+    "愤怒": { "source": "global", "threshold": 0.65 }
+  },
+
+  "base_scores": {
+    "kill_single":      0.25,
+    "kill_3k":          0.60,
+    "kill_4k":          0.85,
+    "kill_5k":          1.00,
+    "bomb_plant":       0.40,
+    "bomb_explode":     0.70,
+    "bomb_defuse":      0.70,
+    "underdog_survive": 0.30,
+    "eco_win":          0.30,
+    "low_blood":        0.20,
+    "no_kit_defuse":    0.30
+  },
+
+  "kill_flag_bonuses": {
+    "through_smoke":  0.20,
+    "no_scope":       0.20,
+    "is_wallbang":    0.20,
+    "attacker_blind": 0.25,
+    "long_distance":  0.15
+  },
+
+  "long_distance_threshold": 1000,
+
+  "match_point_multiplier": 1.4,
+  "match_point_at_wins": 12,
+  "felt_intensity_clamp": 0.2,
+
+  "bias": {
+    "_comment": "赛点局客观加权（与主播立场无关）。favored_team 仅用于 match_point_multiplier 触发逻辑，决定哪方打赛点时加权。空=双方赛点均加权。主播对选手/打法的主观偏好请填写 Prompt/persona.txt，由风格模型在输出 felt_intensity 时自行体现。",
+    "favored_team": ""
+  },
+
+  "global_emotion_baseline": {
+    "_comment": "全局情绪初始值（文档用；实际初值在 match_memory 里）。",
+    "沮丧":     0.0,
+    "愤怒":     0.0
+  },
+
+  "global_emotion_clamp": {
+    "_comment": "各情绪的最大值上限。防止无限积累。",
+    "沮丧":     1.00,
+    "愤怒":     1.00
+  },
+
+  "global_accumulation_rules": {
+    "_comment": [
+      "===== 用户自定义情绪积累规则表 =====",
+      "每局结束后，程序按顺序执行所有 rules，满足 condition 则对 emotion 加 delta。",
+      "delta 为正=情绪上涨，负=情绪下降，clamp 到 [0, global_emotion_clamp[emotion]]。",
+      "",
+      "可用条件标识符（condition 字段）：",
+      "  always                  — 每局无条件触发",
+      "  favored_team_won        — 偏向方赢得本局（需配置 bias.favored_team）",
+      "  favored_team_lost       — 偏向方输掉本局",
+      "  favored_player_got_kill — 偏向选手在本局有击杀（需 bias.favored_players）",
+      "  consecutive_favored_losses — 偏向方连续输局数 >= params.count",
+      "  round_hype_gte          — 本局平均 hype >= params.value",
+      "  round_hype_lt           — 本局平均 hype <  params.value",
+      "  emotion_gte             — 指定情绪当前值 >= params.value（用于联动，如沮丧高了才涨愤怒）",
+      "",
+      "condition 可以是数组 [A, B]，表示 A AND B 同时满足才触发。",
+      "",
+      "示例（已注释，取消注释并填写即可）：",
+      "{ 'condition': 'always',           'emotion': '沮丧',     'delta': -0.01  }  每局自然衰减",
+      "{ 'condition': 'favored_team_lost','emotion': '沮丧',     'delta':  0.04  }  偏向方输局涨沮丧",
+      "{ 'condition': 'favored_team_won', 'emotion': '沮丧',     'delta': -0.05  }  偏向方赢局减沮丧",
+      "{ 'condition': 'round_hype_lt',    'emotion': '沮丧',     'delta':  0.03, 'params': {'value': 0.2} }  连续平淡涨沮丧",
+      "{ 'condition': ['favored_team_lost','round_hype_lt'], 'emotion': '愤怒', 'delta': 0.08, 'params': {'value': 0.3} }",
+      "====================================="
+    ],
+    "rules": [
+      {"condition": "always",                     "emotion": "沮丧", "delta": -0.03, "note": "每局自然平复：没坏事就慢慢回中性"},
+      {"condition": "always",                     "emotion": "愤怒", "delta": -0.04, "note": "每局自然降火"},
+      {"condition": "round_hype_lt",              "emotion": "沮丧", "delta":  0.03, "params": {"value": 0.2}, "note": "连续平淡死局，主播提不起劲（无需配 bias 即生效）"},
+      {"condition": "favored_team_lost",          "emotion": "沮丧", "delta":  0.12, "note": "偏向方输局涨沮丧（需在 bias.favored_team 填队伍）"},
+      {"condition": "favored_team_won",           "emotion": "沮丧", "delta": -0.15, "note": "偏向方赢局快速回血"},
+      {"condition": "consecutive_favored_losses", "emotion": "愤怒", "delta":  0.15, "params": {"count": 3}, "note": "偏向方连败≥3，开始上头"},
+      {"condition": ["favored_team_lost", "round_hype_lt"], "emotion": "愤怒", "delta": 0.08, "params": {"value": 0.3}, "note": "又输又打得难看，火上浇油"}
+    ]
+  },
+
+  "emotion_constraints": {
+    "_comment": "注入 style 模型 prompt 的约束文本。{hype}/{emotion_val} 运行时填充。全局情绪仅作微量 hint，不命令式强制。",
+    "尖叫": {
+      "hint_zh": "【本局激动度极高 hype={hype}】解说应非常炸裂，使用 [激动] 或 [惊叹] 标签，语气拉满。"
+    },
+    "激动": {
+      "hint_zh": "【本局激动度较高 hype={hype}】解说体现兴奋感，适当使用 [激动] 标签。"
+    },
+    "平淡": {
+      "hint_zh": "【本局较平淡 hype={hype}】平稳叙述即可，不要强行激动。"
+    },
+    "沮丧": {
+      "hint_zh": "【全局积累：主播沮丧感偏高 {emotion_val}】（仅微量参考）解说基调可略显低沉，但不夸大，本局精彩事件仍正常解说。"
+    },
+    "愤怒": {
+      "hint_zh": "【全局积累：主播愤怒感偏高 {emotion_val}】（仅微量参考）解说偶尔可流露不满，但不过激，本局高亮操作仍正常激动。"
+    }
+  },
+
+  "speech_rate": {
+    "_comment": "语速配置。base_char_per_sec 为中文解说基础语速（字/秒）。emotion_speed_factor 以 emotion.py 的五种落地标签为准，与 TTS ref 同源。",
+    "base_char_per_sec": 5.0,
+    "emotion_speed_factor": {
+      "平述": 0.95,
+      "紧张": 1.00,
+      "惋惜": 0.90,
+      "激动": 1.15,
+      "惊叹": 1.20
+    }
+  }
+}
