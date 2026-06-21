@@ -51,10 +51,6 @@ final_commentary.wav / final_video.mp4
 | 场景 | 显存需求 |
 |------|---------|
 | 完整运行（VLM + TTS） | 约 8~12 GB |
-| 跳过 phase 2（已有视觉记录） | 约 5~6 GB |
-| 仅 phase 3（语义，纯 API） | 无本地 GPU 要求 |
-
-> Phase 3 语义分析调用云端 LLM API，不占本地显存。VLM 和 GPT-SoVITS 在显存紧张时通过 `one_model_at_a_time` 错峰启动。
 
 ---
 
@@ -170,9 +166,9 @@ python -m sbmachine.phase_tts      --config config/   # 仅 TTS 拼装
 
 ## 开发现状
 
-- VLM 和 LLM 尚未针对 CS2 场景做专项微调，输出质量有待提升
-- LLM 当前仅支持云端 API 模式（OpenAI 兼容接口）
+- VLM 和 LLM 尚未针对 CS2 场景做专项微调，输出质量有待提升，故此次没有上传第三阶段本地运行方案，仅支持云端 API 模式
 - 提示词仍在调优中，phase 3 在复杂回合下可能出现幻觉或截断
+- 还未对第四部分放置参考音频片段，故若直接运行的话可能会报错运行不了
 
 ---
 
@@ -182,3 +178,4 @@ python -m sbmachine.phase_tts      --config config/   # 仅 TTS 拼装
 - [ ] 微调 LLM analyst/style adapter
 - [ ] 补充并校准 `database/` 中的地图数据和术语表
 - [ ] Web UI 可视化运行与进度监控
+- [ ] 调优第四步
