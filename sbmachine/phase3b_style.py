@@ -1,8 +1,8 @@
 """Phase 3b — 风格模型：中性稿 + hype hint → 6657 口播 + [情绪] 标签。"""
 from __future__ import annotations
+
 import datetime
 import json
-import functools
 import re
 import sys
 from pathlib import Path
@@ -15,23 +15,17 @@ from tqdm import tqdm
 
 from core.prompt_loader import load_prompt
 from audio_service.emotion import parse_emotional_text
-from sbmachine.common import load_config, require_path, write_json
+from sbmachine.common import load_config, load_hype_rules, load_json_library, require_path, write_json
 from sbmachine.schemas import EmotionSegment, SemanticData, load_match, save_match
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-# ── hype rules ──
-
-@functools.lru_cache(maxsize=None)
-def _load_hype_rules() -> dict:
-    path = _PROJECT_ROOT / "Prompt" / "json" / "hype_rules.json"
-    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _dominant_scene_emotion(hype: float) -> str:
     """Map scene hype score to emotion label (平淡/激动/尖叫). Same logic as phase3a."""
-    em = _load_hype_rules()["emotions"]
+    em = load_hype_rules()["emotions"]
     if hype >= float(em["尖叫"]["threshold"]):
         return "尖叫"
     if hype >= float(em["激动"]["threshold"]):
@@ -44,7 +38,7 @@ def _build_emotion_constraint(
     avg_hype: float,
     global_emotion: dict[str, float],
 ) -> str:
-    rules = _load_hype_rules()
+    rules = load_hype_rules()
     em_cfg = rules["emotions"]
     ec = rules["emotion_constraints"]
 
@@ -72,20 +66,6 @@ def _build_emotion_constraint(
 
 # ── catchphrase few-shot ──
 
-def _load_catchphrases(path: Path) -> dict[str, list[str]]:
-    if not path.exists():
-        return {}
-    try:
-        lib = json.loads(path.read_text(encoding="utf-8"))
-        return {
-            bucket: [e.get("text", "") if isinstance(e, dict) else str(e) for e in entries]
-            for bucket, entries in lib.items()
-            if not bucket.startswith("_") and isinstance(entries, list)
-        }
-    except Exception:
-        return {}
-
-
 def _hype_bucket(hype: float, rules: dict) -> str:
     em = rules["emotions"]
     if hype >= float(em["尖叫"]["threshold"]):
@@ -96,7 +76,7 @@ def _hype_bucket(hype: float, rules: dict) -> str:
 
 
 def _few_shot_hint(catchphrases: dict[str, list[str]], hype: float, n: int = 4) -> str:
-    rules = _load_hype_rules()
+    rules = load_hype_rules()
     bucket = _hype_bucket(hype, rules)
     phrases = catchphrases.get(bucket, [])[:n]
     if not phrases:
@@ -109,13 +89,8 @@ def _few_shot_hint(catchphrases: dict[str, list[str]], hype: float, n: int = 4) 
 
 # ── commentary demos few-shot（仅 API 路径）──
 
-def _load_commentary_demos(path: Path) -> dict[str, list[str]]:
-    """加载真实解说稿 few-shot 库，结构同 catchphrase（bucket→片段列表）。"""
-    return _load_catchphrases(path)
-
-
 def _demo_hint(demos: dict[str, list[str]], hype: float, n: int = 2) -> str:
-    rules = _load_hype_rules()
+    rules = load_hype_rules()
     bucket = _hype_bucket(hype, rules)
     samples = demos.get(bucket, [])[:n]
     if not samples:
@@ -138,7 +113,13 @@ def _load_persona() -> str:
 # ── prompt assembly ──
 
 def _load_player_aliases() -> dict:
-    return {}
+    path = _PROJECT_ROOT / "database" / "player_aliases.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 
 
 def _aliases_hint(neutral_text: str, aliases: dict) -> str:
@@ -277,6 +258,7 @@ def run_phase3b(
     config = load_config(config_path)
     debug_enabled = bool(config.get("debug", {}).get("phase3", False) or os.getenv("AI6657_DEBUG_PHASE3"))
     llm_cfg = dict(config.get("llm", {}))
+    is_api = llm_cfg.get("backend", "ollama") == "api"   # 仅 API 路径走风格升级，本地零改动
     style_model = config.get("semantic", {}).get("style_model") or config.get("semantic", {}).get("model", "")
     if style_model:
         llm_cfg["model"] = style_model
@@ -284,12 +266,14 @@ def run_phase3b(
     catchphrase_path = _PROJECT_ROOT / config.get("paths", {}).get(
         "catchphrase_library", "Prompt/json/catchphrase_library.json"
     )
-    catchphrases = _load_catchphrases(catchphrase_path)
+    catchphrases = load_json_library(catchphrase_path)
 
-    demos_path = _PROJECT_ROOT / config.get("paths", {}).get(
-        "commentary_demos", "Prompt/json/commentary_demos.json"
-    )
-    demos = _load_commentary_demos(demos_path)
+    demos: dict[str, list[str]] = {}
+    if is_api:
+        demos_path = _PROJECT_ROOT / config.get("paths", {}).get(
+            "commentary_demos", "Prompt/json/commentary_demos.json"
+        )
+        demos = load_json_library(demos_path)
     aliases = _load_player_aliases()
     persona = _load_persona()
 
@@ -318,7 +302,7 @@ def run_phase3b(
     cs_rules_path = _PROJECT_ROOT / "Prompt" / "cs_rules.txt"
     cs_rules = cs_rules_path.read_text(encoding="utf-8").strip() if cs_rules_path.exists() else ""
     # A-1: system_content 固定，不再随 scene 滚动；API 路径用人味升级版 prompt
-    style_prompt_name = "style_system_api"
+    style_prompt_name = "style_system_api" if is_api else "style_system"
     system_content = "\n\n".join(filter(None, [
         load_prompt(style_prompt_name).replace("{persona_hint}", persona),
         cs_rules,
@@ -339,13 +323,16 @@ def run_phase3b(
 
         if dry_run:
             commentary, felt_intensity = f"[平述]第{rnd.round_no}局解说占位。", avg_hype
+            scenes_manifest = []
         elif analyst_failed or not scenes:
             print(f"[phase3b] round {rnd.round_no} skipped: analyst failed or no scenes", file=sys.stderr)
             commentary, felt_intensity = f"[平述]（第{rnd.round_no}局中性稿缺失，跳过解说）", 0.0
+            scenes_manifest = []
         else:
             memory_ctx = memory.render()
 
             scene_commentaries: list[str] = []
+            scene_commentaries_meta: list[dict] = []   # 改动5: scene 级输出元数据（t_start/t_end/emotion/text）
             felt_intensity = 0.0
 
             for scene in scenes:
@@ -363,13 +350,19 @@ def run_phase3b(
                 constraint = _build_emotion_constraint(scene_emotion, scene_hype, global_emotion)
                 few_shot = _few_shot_hint(catchphrases, scene_hype)
                 alias_hint = _aliases_hint(scene_neutral, aliases)
-                demo_hint = _demo_hint(demos, scene_hype)
+                demo_hint = _demo_hint(demos, scene_hype) if is_api else ""
 
-                # 不喂绝对秒数给模型（防复述"867秒"），只留时长+字数预算
-                scene_info = (
-                    f"（约{duration:.0f}秒，字数预算约{char_budget}字）"
-                    + (f"\n阶段：{scene_name}" if scene_name and scene_name != "full" else "")
-                )
+                # API 路径不把绝对秒数喂给模型（防复述"867秒"），只留时长+字数预算
+                if is_api:
+                    scene_info = (
+                        f"（约{duration:.0f}秒，字数预算约{char_budget}字）"
+                        + (f"\n阶段：{scene_name}" if scene_name and scene_name != "full" else "")
+                    )
+                else:
+                    scene_info = (
+                        f"时间：{t_start:.1f}~{t_end:.1f}秒（{duration:.0f}秒，字数预算约{char_budget}字）"
+                        + (f"\n阶段：{scene_name}" if scene_name and scene_name != "full" else "")
+                    )
 
                 # A-4: user_prompt 替代 chat_messages；A-3: 注入 last_tail
                 user_prompt = "\n\n".join(filter(None, [
@@ -411,6 +404,13 @@ def run_phase3b(
                             last_tail = ""
                         else:
                             last_tail = _extract_tail(scene_commentary)  # A-3
+                        # 记录 scene 级输出（用于 manifest scenes 字段）
+                        scene_commentaries_meta.append({
+                            "t_start": t_start,
+                            "t_end":   t_end,
+                            "emotion": scene_emotion,
+                            "text":    _strip_tags(scene_commentary),
+                        })
                 else:
                     print(f"[phase3b] round {rnd.round_no} scene '{scene_name}' style error, skipping", file=sys.stderr)
                     errors.append({
@@ -422,9 +422,10 @@ def run_phase3b(
                     })
 
             commentary = "".join(scene_commentaries) if scene_commentaries else f"[平述]（第{rnd.round_no}局所有场景解说失败）"
+            scenes_manifest = scene_commentaries_meta  # 改动5: 仅非静默场景有产出
 
         if felt_intensity > 0.0:
-            felt_clamp = float(_load_hype_rules().get("felt_intensity_clamp", 0.2))
+            felt_clamp = float(load_hype_rules().get("felt_intensity_clamp", 0.2))
             delta = max(-felt_clamp, min(felt_clamp, felt_intensity - avg_hype))
             effective_hype = max(0.0, min(1.0, avg_hype + delta))
         else:
@@ -446,6 +447,7 @@ def run_phase3b(
             "hype_avg":        round(avg_hype, 3),
             "felt_intensity":  round(felt_intensity, 3),
             "emotion_segments": [seg.__dict__ for seg in rnd.phase3_semantic.emotion_segments],
+            "scenes":          scenes_manifest,  # 改动5: scene 级时间戳+情绪+口播文本（纯增量）
         })
 
     if errors:

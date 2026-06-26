@@ -19,8 +19,11 @@ class GateDecision:
 
 
 class YoloGate:
-    """
-    第二阶段 UI 区域路由器。
+    """第二阶段 UI 区域路由器。
+
+    YOLO 仅返回坐标,不读取玩家数值信息、计时器文本、C4 状态或击杀栏内容。
+    计时器和第一人称(POV)标记坐标是 OCR 的目标;
+    其他所有 UI 坐标仅在发送给 VLM 之前用于做画面遮罩处理。
     """
 
     def __init__(self, config: dict) -> None:

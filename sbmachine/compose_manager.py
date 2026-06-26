@@ -22,6 +22,7 @@ class ComposeManager:
     # compose 服务名 → 该服务健康检查所用的 ServiceManager 名
     _HEALTH_NAME = {
         "vision_service": "vlm",
+        "talk_service": "ollama",
         "audio_service": "sovits",
     }
 
@@ -52,7 +53,10 @@ class ComposeManager:
             raise RuntimeError(f"docker compose up {service} 失败 (exit {result.returncode})")
         self._running.add(service)
 
-        health_name = self._HEALTH_NAME[service]
+        health_name = self._HEALTH_NAME.get(service)
+        if health_name is None:
+            self.down_one(service)
+            raise RuntimeError(f"[compose] 未知服务 '{service}'，请检查 _HEALTH_NAME 映射。")
         url = self._health._health_url(health_name)
         timeout = self._timeout(health_name)
         print(f"[compose] 等待 {service} 健康: {url} (≤{timeout}s)", flush=True)
@@ -68,5 +72,5 @@ class ComposeManager:
         self._running.discard(service)
 
     def down_all(self) -> None:
-        self._compose("down")
-        self._running.clear()
+        for service in list(self._running):
+            self.down_one(service)

@@ -28,6 +28,16 @@ from vision_service.region_crops import box_from_norm, crop_frame, mask_regions
 
 
 class DebugWriter:
+    """当设置了 --debug-dir 时,写入逐帧的调试产物。
+
+    在 debug_dir/ 下的输出布局:
+      round_<NN>/
+        frame_<ts>_pov_crop.png      - 喂给第一人称(POV)OCR 的感兴趣区域(ROI)
+        frame_<ts>_timer_crop.png    - 喂给计时器 OCR 的感兴趣区域(ROI)
+        frame_<ts>_masked.png        - 发送给 VLM 的遮罩了 UI 的画面
+      frames.jsonl                   - 包含所有字段的逐帧 JSONL 文件,每帧一行
+    """
+
     def __init__(self, debug_dir: Path | None) -> None:
         self.enabled = debug_dir is not None
         self.debug_dir = debug_dir
@@ -686,7 +696,9 @@ def run_phase2(
         finally:
             cap.release()
 
+        # ══════════════════════════════════════════════════════════════
         # BATCH VLM:按 batch_size 分批推理,带逐帧进度条
+        # ══════════════════════════════════════════════════════════════
         valid_vlm = [item for item in pending_vlm if not item.get("decode_failed")]
         vlm_responses: dict[float, str] = {}
 
@@ -711,15 +723,19 @@ def run_phase2(
                 total_vlm_calls += len(chunk)
                 vlm_bar.update(len(chunk))
 
+        # ══════════════════════════════════════════════════════════════
         # PASS 2:按时间轴顺序组装 key_frames(维护 prev_tick / consecutive_unmatched)
+        # ══════════════════════════════════════════════════════════════
         pending_lookup: dict[float, dict] = {item["ts"]: item for item in pending_vlm}
         prev_tick: int | None = None
         consecutive_unmatched = 0
         empty_timer_count = 0
 
         def _emit_background_row(ts: float, hint: str) -> None:
-            """
-            把一帧降级为背景行:保留 demo 事实,desc 留白,避免时间轴留洞。
+            """把一帧降级为背景行:保留 demo 事实,desc 留白,避免时间轴留洞。
+
+            用于:纯背景行、视频解码失败、VLM 退化输出。三处共用同一降级路径,
+            保证任何一秒都有一行 demo 背景,不再整帧丢弃。
             """
             nonlocal prev_tick
             bg_info, tk = build_background_info(

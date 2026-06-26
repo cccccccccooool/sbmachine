@@ -1,4 +1,7 @@
-"""
+"""6657 风格离线录像解说 AI 项目
+项目功能：搭建一个"整段 CS2 录像 -> 分回合时间线 -> 人设 LLM 解说文本 -> GPT-SoVITS 语音"的离线生成流水线。
+本文件功能：统一对局状态 Schema。
+
 启动方式：被 vision_service/context_assembler.py 等模块导入。
 输入数据流：无文件 I/O；由上游感知模块（OCR/YOLO/VLM/音频）组装 GameState 对象。
 输出数据流：GameState.render() 返回结构化中文文本，直接喂给 LLM 作为解说 prompt。

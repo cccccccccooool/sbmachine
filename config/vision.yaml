@@ -25,17 +25,19 @@ vision:
       timer: "OCR timer; do not mask timer."
       c4: "Keep C4 coordinate only; do not mask it."
   pov_ocr:
-    # 未识别到pov做的降级
+    # Normalized x1,y1,x2,y2 of the "Currently watching: XXX" name bar.
+    # Calibrate by running: ffmpeg -ss 60 -i data/raw/match.mp4 -frames:v 1 /tmp/frame.png
     box: "0.42,0.90,0.58,0.97"
     min_match_score: 0.6
     enabled: true
-    spectator_min_frames: 30  
-  # 未识别到时间栏做的降级
+    spectator_min_frames: 30  # lower to 3-5 after pov_ocr box is calibrated
   timer_ocr:
     box: "0.46,0.00,0.54,0.06"
-    enabled: false  
+    enabled: false  # enable only when YOLO misses the timer box
 
   score_ocr:
+    # YOLO class "score" / "top_hud" takes priority when detected.
+    # Set enabled: true + box to activate fixed-ROI fallback before YOLO is retrained.
     box: ""
     enabled: false
 
@@ -50,6 +52,7 @@ vision:
     dense_pre_sec: 1.5           # 事件窗：击杀/炸弹前几秒加密喂图
     dense_post_sec: 1.5          # 事件窗：击杀/炸弹后几秒加密喂图
     dense_fps: 2                 # 事件窗喂图帧率（fps）
+    # 不设 VLM 预算上限：3s 网格 + 全部击杀/炸弹事件窗都真实调 VLM，不再降级。
 
   vlm:
     endpoint: http://127.0.0.1:23333/v1/chat/completions
@@ -57,4 +60,4 @@ vision:
     temperature: 0.2
     max_tokens: 256
     timeout_sec: 120
-    batch_size: 1          # 并发数
+    batch_size: 1          # 一次打包多少张图发给 VLM（1=原串行）；40G 卡建议从 4 开始测

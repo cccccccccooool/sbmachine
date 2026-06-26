@@ -1,8 +1,14 @@
-"""
+"""Frame-level visual dump schema for offline SFT data collection.
+
 启动方式：被 data_pipeline/build_visual_sft_dataset.py 导入调用（fragment_dump_from_dict）。
 输入数据流：视觉转储 JSON（由感知模块对预切小局逐帧采集产出）。
 输出数据流：FragmentVisualDump.render() 返回结构化文本，供 SFT 数据构造时与主播原话配对。
 用法用途：定义帧级视觉转储的数据模型；每个采样帧携带视觉检测器读取到的所有信息，SFT builder 将这些转储与同一视频时间线上的解说转录配对。
+
+The input videos are assumed to be pre-cut into small live-game fragments.  This
+schema is deliberately simple: each sampled frame carries whatever the visual
+detectors can read, and the SFT builder aligns these dumps with commentator
+transcripts on the same video timeline.
 """
 from __future__ import annotations
 

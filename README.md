@@ -166,9 +166,10 @@ python -m sbmachine.phase_tts      --config config/   # 仅 TTS 拼装
 
 ## 开发现状
 
-- VLM 和 LLM 尚未针对 CS2 场景做专项微调，输出质量有待提升，故此次没有上传第三阶段本地运行方案，仅支持云端 API 模式
+- VLM 和 LLM 尚未针对 CS2 场景做专项微调，输出质量有待提升
 - 提示词仍在调优中，phase 3 在复杂回合下可能出现幻觉或截断
 - 还未对第四部分放置参考音频片段，故若直接运行的话可能会报错运行不了
+- 此次上传了phase 3相关模型本地调用方案，但未做真正适配（如模型下载文档和database为空未做兼容），可能无法照常使用
 
 ---
 
@@ -178,4 +179,4 @@ python -m sbmachine.phase_tts      --config config/   # 仅 TTS 拼装
 - [ ] 微调 LLM analyst/style adapter
 - [ ] 补充并校准 `database/` 中的地图数据和术语表
 - [ ] Web UI 可视化运行与进度监控
-- [ ] 调优第四步
+- [√] 调优第四步

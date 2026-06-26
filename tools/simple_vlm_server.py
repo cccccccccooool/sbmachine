@@ -1,4 +1,5 @@
-"""
+"""6657 风格离线录像解说 AI 项目
+项目功能：搭建一个"整段 CS2 录像 -> 分回合时间线 -> 人设 LLM 解说文本 -> GPT-SoVITS 语音"的离线生成流水线。
 本文件功能：轻量级 VLM 推理服务（Qwen2.5-VL-3B-Instruct），提供 OpenAI 兼容的 /v1/chat/completions 和 batch 端点。
 
 启动方式：python tools/simple_vlm_server.py（监听 0.0.0.0:23333）
@@ -7,7 +8,9 @@
 用法用途：作为 Phase 2 VLM 推理后端，自动加载基础模型和可选的 LoRA 微调权重，支持单帧和批量推理。
 """
 import os
+# [PUA生效 🔥] 统一重定向 Hugging Face 缓存至持久化的 workspace 目录，打通模型持久化闭环
 os.environ["HF_HOME"] = "/workspace/.hf_cache"
+# [强制离线] 既然外面已经下载好了，强行切断它的联网校验欲望，防止死等超时！
 os.environ["HF_HUB_OFFLINE"] = "1"
 
 import base64
@@ -118,6 +121,16 @@ async def chat_completions(request: Request):
 
 @app.post("/v1/chat/completions/batch")
 async def chat_completions_batch(request: Request):
+    """弹性批量推理端点。
+
+    请求格式：
+        {"batch": [{"prompt": "...", "image_b64": "..."}, ...], "max_new_tokens": 128}
+    响应格式：
+        {"results": ["resp1", "resp2", ...]}
+
+    batch_size 由请求内图片数量动态决定；每次 model.generate() 调用一次，
+    充分利用 GPU 并行能力。
+    """
     payload = await request.json()
     batch = payload.get("batch", [])
     max_new_tokens = int(payload.get("max_new_tokens", 128))
@@ -190,4 +203,4 @@ async def chat_completions_batch(request: Request):
 
 if __name__ == "__main__":
     # 启动本地 23333 端口服务
-    uvicorn.run(app, host="0.0.0.0", port=23333)
+    uvicorn.run(app, host="0.0.0.0", port=23333)

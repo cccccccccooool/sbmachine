@@ -18,7 +18,7 @@ from sbmachine.phase4_assemble import run_phase4
 
 
 def _call_gpu_guard(action: str, use_gpu_guard: bool) -> None:
-    """调用 gpu_guard """
+    """调用 gpu_guard 守护进程进行显存释放或恢复霸占"""
     if not use_gpu_guard:
         return
     script = PACKAGE_ROOT / "tools" / "gpu_guard.py"
@@ -164,6 +164,7 @@ def _run_phases_subprocess(config_path, phases: dict, config: dict, dry_run: boo
         if not one_at_a_time:
             # 不错峰：全部服务一次性拉起
             if phases.get("phase2_vision", True):   mgr.start("vlm")
+            if phases.get("phase3_semantic", True): mgr.start("ollama")
             if phases.get("phase4_assemble", True): mgr.start("sovits")
 
         if phases.get("phase2_vision", True):
@@ -180,8 +181,12 @@ def _run_phases_subprocess(config_path, phases: dict, config: dict, dry_run: boo
         if phases.get("phase3_semantic", True):
             _call_gpu_guard("release", use_gpu_guard)
             try:
+                if one_at_a_time:
+                    mgr.start("ollama")
                 _spawn("sbmachine.phase_semantic", config_path, dry_run)
             finally:
+                if one_at_a_time:
+                    mgr.stop("ollama")
                 _call_gpu_guard("resume", use_gpu_guard)
 
         if phases.get("phase4_assemble", True):

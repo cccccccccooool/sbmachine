@@ -70,8 +70,11 @@ class VlmClient:
         return content.strip()
 
     def describe_batch(self, frames: list[Any], hints: list[str]) -> list[str]:
-        """
-        批量推理:一次发送 N 张图,返回 N 个响应字符串。
+        """批量推理:一次发送 N 张图,返回 N 个响应字符串。
+
+        自动推导 batch 端点(把 /v1/chat/completions 替换为 /v1/chat/completions/batch)。
+        如果 server 端不支持 batch(404 / 任何网络异常),自动降级为逐张串行调用。
+        hints 与 frames 一一对应;长度不一致时截断到较短一方。
         """
         if not frames:
             return []

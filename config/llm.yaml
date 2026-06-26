@@ -1,5 +1,5 @@
 llm:
-  backend: api              #ollama/api 模式选择
+  backend: api              #ollama/api
   ollama_url: http://127.0.0.1:11434/api/generate
 
   temperature: 0.75
@@ -11,19 +11,30 @@ llm:
   frequency_penalty: 0.3    # api 防复读
 
 semantic:
+  # analyst/style 均未设置时的统一回退值
   model: qwen3:8b
-
+  # 双模型模式（phases.dual_model: true）
+  # analyst_model: 分析 8B，只管事实准确，中性白描
+  # style_model:   风格 8B，只管像 6657，加情绪标签
+  # 训练好后在下面填入各自的 ollama model 名称
   analyst_model: qwen3:8b   # TODO: 替换为训练好的分析 adapter
   style_model:   qwen3:8b   # TODO: 替换为训练好的风格 adapter
- 
-  analyst_concurrent_rounds: 5  # phase3a 并发局数。
+  # phase3a 并发局数。云端 API 模式下不受本地显存限制，可以直接拉高（视你的 API 账号并发限额而定）。
+  analyst_concurrent_rounds: 5
+  # 分析模型输出上限（JSON scenes 数组；忙局 scene 多需留足，过低会截断成 analyst_failed）
   analyst_max_tokens: 3072
-  segment_long_rounds: true  # 长回合策略：  false(默认)=降采样关键帧到下限，单次调用（有损快);true=切多段逐段分析后合并（无损，K次调用）
+  # 长回合策略：payload 超 token 预算时
+  #   false(默认)=降采样关键帧到下限，单次调用（有损快）
+  #   true       =切多段逐段分析后合并（无损，K次调用）
+  segment_long_rounds: true
   segment_overlap_frames: 2   # 段间重叠帧（仅喂上下文，输出按归属窗去重）
+  window_max_sec: 10          # 静默段兜底切窗间隔（秒）
+  window_min_sec: 3           # 小于此值的窗并入相邻
 
+# 口癖库路径（phase3b 注入 few-shot）
 paths:
   catchphrase_library: Prompt/json/catchphrase_library.json
-  commentary_demos:    Prompt/json/commentary_demos.json  
+  commentary_demos:    Prompt/json/commentary_demos.json   # 真实解说稿 few-shot（仅 API 路径）
   callouts_zh:         database/callouts_zh.json
   terms_zh:            database/terms_zh.json
   lineups_dir:         database/lineups

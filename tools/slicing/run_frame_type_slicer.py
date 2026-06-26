@@ -1,4 +1,5 @@
-"""
+"""6657 风格离线录像解说 AI 项目
+项目功能：搭建一个"整段 CS2 录像 -> 分回合时间线 -> 人设 LLM 解说文本 -> GPT-SoVITS 语音"的离线生成流水线。
 本文件功能：使用 frame_type 分类模型对视频进行自动检测并切片。
 
 启动方式：
@@ -35,6 +36,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import queue
 import sys
 from collections import Counter, deque
 from pathlib import Path
@@ -288,37 +290,6 @@ def should_bridge_segments(
     return False, decision
 
 
-def build_segments(rows: list[dict], *, live_label: str, min_live_sec: float, bridge_gap_sec: float) -> list[dict]:
-    raw_segments = []
-    active = None
-    last_ts = None
-    for row in rows:
-        ts = float(row["time_sec"])
-        is_live = row.get("smooth_label") == live_label
-        if is_live and active is None:
-            active = {"start_sec": ts, "end_sec": ts, "frames": 0}
-        if is_live and active is not None:
-            active["end_sec"] = ts
-            active["frames"] += 1
-        if not is_live and active is not None:
-            raw_segments.append(active)
-            active = None
-        last_ts = ts
-    if active is not None:
-        raw_segments.append(active)
-
-    merged = []
-    for segment in raw_segments:
-        if merged and segment["start_sec"] - merged[-1]["end_sec"] <= bridge_gap_sec:
-            merged[-1]["end_sec"] = segment["end_sec"]
-            merged[-1]["frames"] += segment["frames"]
-        else:
-            merged.append(segment)
-    return [
-        {**segment, "duration_sec": round(segment["end_sec"] - segment["start_sec"], 3)}
-        for segment in merged
-        if segment["end_sec"] - segment["start_sec"] >= min_live_sec
-    ]
 
 
 def build_segments_v2(
@@ -597,17 +568,16 @@ def run(args: argparse.Namespace) -> tuple[Path, Path]:
                     print(f"progress: {current_total}/{total} ({percent:.1f}%)", flush=True)
                 else:
                     print(f"progress: {current_total} frames processed", flush=True)
+            except queue.Empty:
+                for i, p in enumerate(processes):
+                    if not p.is_alive() and i not in worker_results:
+                        print(f"Worker process {i} died unexpectedly with exitcode {p.exitcode}", flush=True)
+                        finished_workers = workers
+                        break
+                continue
             except Exception as e:
-                if "Empty" in str(type(e)):
-                    for i, p in enumerate(processes):
-                        if not p.is_alive() and i not in worker_results:
-                            print(f"Worker process {i} died unexpectedly with exitcode {p.exitcode}", flush=True)
-                            finished_workers = workers
-                            break
-                    continue
-                else:
-                    print(f"Error during progress tracking: {e}", flush=True)
-                    break
+                print(f"Error during progress tracking: {e}", flush=True)
+                break
         
         for p in processes:
             p.join()

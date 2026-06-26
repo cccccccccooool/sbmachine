@@ -1,4 +1,5 @@
-"""
+"""6657 风格离线录像解说 AI 项目
+项目功能：搭建一个"整段 CS2 录像 -> 分回合时间线 -> 人设 LLM 解说文本 -> GPT-SoVITS 语音"的离线生成流水线。
 本文件功能：解析 CS2 demo 文件为 DemoQuery 可消费的 JSON/parquet 产物。
 
 启动方式：被 sbmachine/run_all.py 的 _run_demo_parse() 通过子进程调用；也可独立运行 python tools/parse_demo.py --demo ... --output-dir ...

@@ -1,17 +1,20 @@
 audio_tools:
   loud_onset:
     sample_rate: 16000
-    flux_threshold: 0.6     
-    peak_mult: 6.0          
-    min_gap_sec: 0.4        
+    flux_threshold: 0.6     # onset_strength 动态阈值系数（相对均值的倍数触发点）
+    peak_mult: 6.0          # 峰值高于均值 6 倍才算强瞬态
+    min_gap_sec: 0.4        # 相邻 onset 最小间隔（秒）
 
   asr:
+    # FunASR models — paraformer-zh maps to Paraformer-Large with timestamp output
+    # Do NOT swap to speech_paraformer-large_*_pytorch base; it lacks sentence timestamps
     model: paraformer-zh
     vad_model: fsmn-vad
     punc_model: ct-punc
     max_single_segment_time: 30000
 
   speaker:
+    # ModelScope models — 16kHz, no HuggingFace token required
     diarization_model: iic/speech_campplus_speaker-diarization_common
     sv_model: iic/speech_campplus_sv_zh-cn_16k-common
     asr_model: iic/SenseVoiceSmall

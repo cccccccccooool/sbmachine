@@ -1,4 +1,4 @@
-"""外部推理服务生命周期管理（VLM / SoVITS）。"""
+"""外部推理服务生命周期管理（VLM / Ollama / SoVITS）。"""
 from __future__ import annotations
 
 import subprocess
@@ -27,6 +27,13 @@ class ServiceManager:
             p = urlparse(ep)
             return f"{p.scheme}://{p.netloc}/health"
 
+        if name == "ollama":
+            base = self.config.get("llm", {}).get(
+                "ollama_url", "http://127.0.0.1:11434/api/generate"
+            )
+            p = urlparse(base)
+            return f"{p.scheme}://{p.netloc}/"
+
         if name == "sovits":
             host, port = "127.0.0.1", 9880
             try:
@@ -45,6 +52,12 @@ class ServiceManager:
             return f"http://{host}:{port}/"
 
         raise ValueError(f"Unknown service name: {name}")
+
+    # ── Ollama model name（从 config/llm.yaml semantic.model 读取） ──
+
+    def _ollama_model(self) -> str:
+        svc_override = self.config.get("runtime", {}).get("services", {}).get("ollama", {}).get("model", "")
+        return svc_override or self.config.get("semantic", {}).get("model", "qwen3:8b")
 
     # ── 健康轮询 ──
 
@@ -114,6 +127,12 @@ class ServiceManager:
                 )
 
         print(f"[services] {name} healthy", flush=True)
+
+        # Ollama 额外确保模型已拉取
+        if name == "ollama":
+            model = self._ollama_model()
+            print(f"[services] ollama pull {model}", flush=True)
+            subprocess.run(["ollama", "pull", model], check=True)
 
     # ── 停止 ──
 

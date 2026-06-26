@@ -1,4 +1,6 @@
-"""本文件功能：离线比赛时间线 Schema。
+"""6657 风格离线录像解说 AI 项目
+项目功能：搭建一个"整段 CS2 录像 -> 分回合时间线 -> 人设 LLM 解说文本 -> GPT-SoVITS 语音"的离线生成流水线。
+本文件功能：离线比赛时间线 Schema。
 
 输入数据流：无文件 I/O；由上游阶段（demo 解析 + 视觉感知）组装 MatchTimeline 对象。
 输出数据流：MatchTimeline.render() 返回结构化中文文本，直接喂给 LLM 作为解说证据材料。
@@ -99,6 +101,7 @@ class TimelineEvent:
         confidence = ""
         if self.confidence < 0.99:
             confidence = f" / 置信度:{self.confidence:.2f}"
+        label = EVENT_TYPE_CN.get(self.event_type, self.event_type.value)
         low_conf = " / 低置信仅作参考" if self.confidence < 0.70 else ""
         return f"- {format_time(self.time_sec)}{clock} [{label}{side}]{evidence}{confidence}{low_conf}: {self.summary}"
 

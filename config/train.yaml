@@ -1,0 +1,39 @@
+# 训练配置 — 替代 AI6657_TRAIN_PROFILE / AI6657_DATASET_DIR 环境变量
+# 所有训练相关参数统一在此，scripts/ 和 data_pipeline/ 读此文件。
+
+# 当前训练目标：full | lite | analyst | style
+profile: analyst
+
+# LLM 训练基座（所有 LLM profile 共用；与 Ollama qwen3:8b 同源，adapter 可直挂）
+base_model: Qwen/Qwen3-8B
+
+# SFT 数据目录（相对项目根）
+dataset_dir: data/sft
+
+# 各 profile 对应的 LLaMA-Factory 数据集名（需在 training/dataset_info.json 注册）
+datasets:
+  full:    6657_persona_sft
+  lite:    6657_persona_sft
+  analyst: analyst_sft
+  style:   style_sft
+
+# 各 profile 的 LoRA adapter 输出目录
+output_dirs:
+  full:    output/6657-full-lora
+  lite:    output/6657-lite-lora
+  analyst: output/6657-analyst-lora
+  style:   output/6657-style-lora
+
+# 各 profile 使用的 system prompt 文件（build_sft_dataset.py --system-prompt 的默认值）
+system_prompts:
+  full:    training/persona_system_prompt.txt
+  lite:    training/persona_system_prompt.txt
+  analyst: Prompt/analyst_system.txt
+  style:   Prompt/style_system.txt
+
+# 各 profile 的输入 JSONL（build_sft_dataset.py --input 的默认值）
+input_files:
+  full:    data/sft/aligned_segments.jsonl
+  lite:    data/sft/aligned_segments.jsonl
+  analyst: data/sft/analyst_aligned.jsonl
+  style:   data/sft/style_aligned.jsonl

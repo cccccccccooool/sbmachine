@@ -1,4 +1,4 @@
-"""第四阶段（TTS 语音合成与最终音频拼接）。读取前一阶段带情感标签的解说文本，调用 TTS 客户端分段合成语音，最后将它们拼接成全场完整音频，并可选与切片视频合成最终带解说的视频。"""
+"""第四阶段（TTS 语音合成与逐局音画合成）。读取前一阶段带情感标签的解说文本，调用 TTS 客户端逐局合成语音，再用 ffmpeg 将每局解说音轨与游戏原声混音，产出逐局 mp4。"""
 from __future__ import annotations
 
 import subprocess
@@ -47,35 +47,48 @@ def _run_ffmpeg(args: list[str]) -> None:
     subprocess.run(["ffmpeg", "-y", *args], check=True)
 
 
-def _make_video_clips(match, source_video: Path, clip_dir: Path, final_audio: Path | None, final_video: Path | None) -> Path | None:
-    clip_dir.mkdir(parents=True, exist_ok=True)
-    clips: list[Path] = []
-    for round_record in match.rounds:
-        clip = clip_dir / f"round_{round_record.round_no:03d}.mp4"
-        _run_ffmpeg(
-            [
-                "-ss",
-                str(round_record.start_sec),
-                "-to",
-                str(round_record.end_sec),
-                "-i",
-                str(source_video),
-                "-c",
-                "copy",
-                str(clip),
-            ]
-        )
-        clips.append(clip)
+def _mux_round_video(
+    clip_path: Path,
+    audio_path: Path,
+    output_path: Path,
+    game_vol: float = 0.25,
+    comm_vol: float = 1.0,
+) -> Path:
+    """将单局视频片段与解说音轨混音，游戏原声降至 game_vol，解说保持 comm_vol。"""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    _run_ffmpeg(
+        [
+            "-i", str(clip_path),
+            "-i", str(audio_path),
+            "-filter_complex",
+            f"[0:a]volume={game_vol}[bg];[1:a]volume={comm_vol}[sp];[bg][sp]amix=inputs=2:duration=first[aout]",
+            "-map", "0:v:0",
+            "-map", "[aout]",
+            "-c:v", "copy",
+            "-shortest",
+            str(output_path),
+        ]
+    )
+    return output_path
 
-    concat_list = clip_dir / "concat.txt"
-    concat_list.write_text("".join(f"file '{clip.as_posix()}'\n" for clip in clips), encoding="utf-8")
-    filtered_video = clip_dir / "filtered_video.mp4"
-    _run_ffmpeg(["-f", "concat", "-safe", "0", "-i", str(concat_list), "-c", "copy", str(filtered_video)])
-    if final_audio and final_video:
-        final_video.parent.mkdir(parents=True, exist_ok=True)
-        _run_ffmpeg(["-i", str(filtered_video), "-i", str(final_audio), "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-shortest", str(final_video)])
-        return final_video
-    return filtered_video
+
+_DUMMY_PLACEHOLDERS = (
+    "中性稿缺失",
+    "暂无解说",
+    "跳过解说",
+)
+
+
+def _is_dummy_round(text: str) -> bool:
+    """哑局判定：commentary_text 为空、全为 [style error:、或含占位串。"""
+    if not text:
+        return True
+    stripped = text.strip()
+    # 占位串：来自 phase3b 的「中性稿缺失/暂无解说」分支
+    if any(ph in stripped for ph in _DUMMY_PLACEHOLDERS):
+        return True
+    lines = [seg.strip() for seg in stripped.split("[") if seg.strip()]
+    return all(seg.startswith("style error:") for seg in lines) if lines else True
 
 
 def run_phase4(
@@ -91,52 +104,76 @@ def run_phase4(
 
     config = load_config(config_path)
     match = load_match(rounds_path)
+
+    # ── TTS 配置 ──
     tts_config = config.get("tts", {})
     tts_runtime_path = require_path(tts_config.get("config", "audio_service/gpt_sovits_runtime.yaml"), "tts.config")
     tts_runtime = read_tts_config(tts_runtime_path) if not dry_run else {}
-    audio_dir = require_path(tts_config.get("output_dir", "output/sbmachine/audio"), "tts.output_dir")
-    final_audio = require_path(tts_config.get("final_audio", "output/sbmachine/final_commentary.wav"), "tts.final_audio")
-    audio_parts: list[Path] = []
+
+    # ── Phase4 配置（从 pipeline.yaml phase4 节读取，缺则用默认值）──
+    p4 = config.get("phase4", {})
+    output_dir = Path(p4.get("output_dir", "output/sbmachine/rounds"))
+    comm_vol = float(p4.get("commentary_volume", 1.0))
+    game_vol = float(p4.get("game_audio_volume", 0.25))
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── 源视频（可选，用于逐局视频混音）──
+    source_video = resolve_path(getattr(match, "video_path", None))
+
     records = []
+    skipped_count = 0
 
-    for round_record in tqdm(match.rounds, desc="Phase4 TTS", unit="round"):
+    for round_record in tqdm(match.rounds, desc="Phase4 TTS+Mux", unit="round"):
+        rno = round_record.round_no
         text = _tagged_text(round_record)
-        audio_path = audio_dir / f"round_{round_record.round_no:03d}.wav"
-        if text and not dry_run:
-            synthesize_emotional(tts_runtime, text, audio_path)
-            audio_parts.append(audio_path)
-            round_record.phase4_audio = AudioData(audio_path=str(audio_path))
-        elif text:
-            round_record.phase4_audio = AudioData(audio_path=str(audio_path))
-        records.append(
-            {
-                "round_no": round_record.round_no,
+        audio_path = output_dir / f"round_{rno:03d}.wav"
+        dummy = _is_dummy_round(text)
+
+        if dummy:
+            # 哑局：跳过 TTS 和视频混音
+            skipped_count += 1
+            records.append({
+                "round_no": rno,
                 "audio_path": str(audio_path),
-                "order_manifest": str(audio_path.with_name(f"{audio_path.stem}_order.json")),
-                "text": text,
-            }
-        )
+                "video_path": None,
+                "skipped": True,
+            })
+            continue
 
-    stitched_audio = None if dry_run else _concat_audio(audio_parts, final_audio)
+        # TTS 合成
+        if not dry_run:
+            synthesize_emotional(tts_runtime, text, audio_path)
+        round_record.phase4_audio = AudioData(audio_path=str(audio_path))
 
-    video_manifest = None
-    video_config = config.get("video", {})
-    if video_config.get("make_filtered_video", False) and not dry_run:
-        source_video = resolve_path(match.video_path)
-        if source_video is not None:
-            video_manifest = _make_video_clips(
-                match,
-                source_video,
-                require_path(video_config.get("clip_dir", "output/sbmachine/video_clips"), "video.clip_dir"),
-                stitched_audio,
-                resolve_path(video_config.get("final_video", "output/sbmachine/final_video.mp4")),
-            )
+        # 逐局视频混音（需要 make_video=true、源视频和该局时间戳）
+        video_path: str | None = None
+        if p4.get("make_video", False) and source_video is not None and not dry_run:
+            clip_path = output_dir / f"clip_{rno:03d}.mp4"
+            # 先切出该局原始片段
+            _run_ffmpeg([
+                "-ss", str(round_record.start_sec),
+                "-to", str(round_record.end_sec),
+                "-i", str(source_video),
+                "-c", "copy",
+                str(clip_path),
+            ])
+            out_mp4 = output_dir / f"round_{rno:03d}.mp4"
+            _mux_round_video(clip_path, audio_path, out_mp4, game_vol=game_vol, comm_vol=comm_vol)
+            video_path = str(out_mp4)
+
+        records.append({
+            "round_no": rno,
+            "audio_path": str(audio_path),
+            "video_path": video_path,
+            "skipped": False,
+        })
 
     save_match(output_rounds_path, match)
     manifest = {
         "rounds": records,
-        "final_audio": str(stitched_audio) if stitched_audio else None,
-        "final_video": str(video_manifest) if video_manifest else None,
+        "total_rounds": len(match.rounds),
+        "skipped_rounds": skipped_count,
+        "output_dir": str(output_dir),
     }
     write_json(manifest_path, manifest)
     return manifest

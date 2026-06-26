@@ -45,8 +45,13 @@ class PlayerMatch:
 
 
 class DemoQuery:
-    """
-    基于 tools/parse_demo.py 生成的文件的小型查询层。
+    """基于 tools/parse_demo.py 生成的文件的小型查询层。
+
+    Demo 的 tick 是从录像开始算起的绝对值。回合计时器锚点的转换方式如下:
+    relative_sec = 115 - timer_seconds
+    absolute_tick = freeze_end_tick + relative_sec * tick_rate
+
+    tick_rate 必须来自 demo_meta.json/header。故意不硬编码,因为不同的 CS demo 可能使用不同的 tick rate。
     """
 
     def __init__(self, parsed_dir: Path) -> None:
@@ -136,7 +141,8 @@ class DemoQuery:
         return [self._row_to_dict(row) for _, row in rows.iterrows()]
 
     def callout_of(self, x: float, y: float, z: float = 0.0) -> str:
-
+        # Go parser 已将区域名称写入每个 tick 的 'callout' 列;
+        # 保留此方法兼容 API,state_at() 返回的行已包含 'callout'。
         return ""
 
     def kills_between(self, tick_a: int, tick_b: int) -> list[dict]:
@@ -159,6 +165,7 @@ class DemoQuery:
                 result.append({**g, "_event": "detonate"})
         return result
 
+    # ── lineup KB lookup ──
 
     def lookup_lineup(
         self,
@@ -176,6 +183,28 @@ class DemoQuery:
           - and same for to_callout
         Returns first match or None.
         """
+        if lineups_dir is None:
+            # default: database/lineups/ next to repo root
+            lineups_dir = Path(__file__).resolve().parents[1] / "database" / "lineups"
+        map_name = self.map_name or "unknown"
+        lineup_file = Path(lineups_dir) / f"{map_name}.json"
+        if not lineup_file.exists():
+            return None
+        try:
+            entries: list[dict] = json.loads(lineup_file.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        nt = nade_type.lower().replace("grenade", "he").replace("incendiary", "molotov")
+        fc = from_callout.lower()
+        tc = to_callout.lower()
+        for entry in entries:
+            et = entry.get("type", "").lower()
+            ef = entry.get("from_callout", "").lower()
+            eto = entry.get("to_callout", "").lower()
+            if et != nt:
+                continue
+            if (ef in fc or fc in ef) and (eto in tc or tc in eto):
+                return entry
         return None
 
     # ── new event query methods (demoinfocs-golang outputs) ──

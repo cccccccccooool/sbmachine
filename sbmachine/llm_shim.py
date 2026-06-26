@@ -48,27 +48,35 @@ def _post_openai_with_retry(url: str, payload: dict, headers: dict, timeout: int
     return response.json()
 
 
-def _no_think_system(system_prompt: str, model: str, llm_config: dict) -> str:
-    """qwen3 关思考：system 首行插 /no_think（前置确保截断时也生效）。"""
-    if not bool(llm_config.get("enable_thinking", False)) and "qwen" in model.lower():
-        return "/no_think\n\n" + (system_prompt or "")
-    return system_prompt
-
-
-def _build_openai_request(llm_config: dict) -> tuple[str, dict, str]:
-    """从 config / secrets / env 解析 endpoint、auth headers、model name。"""
+def _execute_openai_chat(
+    messages: list[dict],
+    llm_config: dict,
+    max_tokens: int | None = None,
+    log_ctx: dict | None = None,
+) -> str:
+    """内部通用的 OpenAI 格式 API 调用器。"""
     _s = _load_secrets()
     base_url = _s.get("base_url") or os.getenv("AI6657_base_url") or llm_config.get("base_url", "https://api.openai.com/v1")
     url = f"{base_url.rstrip('/')}/chat/completions"
     api_key = _s.get("api_key") or os.getenv("AI6657_api_key") or llm_config.get("api_key", "sk-xxx")
     model = _s.get("model") or os.getenv("AI6657_LLM_MODEL") or llm_config.get("model", "gpt-4o-mini")
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    return url, headers, model
 
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
 
-def _build_payload(model: str, messages: list[dict], llm_config: dict, max_tokens: int | None) -> dict:
-    """组装 chat completions payload（model/messages/temperature/max_tokens/frequency_penalty）。"""
-    payload: dict = {
+    # qwen3 关思考：前置确保截断时也生效
+    if messages and not bool(llm_config.get("enable_thinking", False)) and "qwen" in model.lower():
+        msgs = [dict(m) for m in messages]
+        if msgs[0].get("role") == "system":
+            if not msgs[0].get("content", "").startswith("/no_think"):
+                msgs[0]["content"] = "/no_think\n\n" + (msgs[0].get("content") or "")
+        else:
+            msgs.insert(0, {"role": "system", "content": "/no_think"})
+        messages = msgs
+
+    payload = {
         "model": model,
         "messages": messages,
         "temperature": float(llm_config.get("temperature", 0.75)),
@@ -78,7 +86,12 @@ def _build_payload(model: str, messages: list[dict], llm_config: dict, max_token
     fp = float(llm_config.get("frequency_penalty", 0.0) or 0.0)
     if fp:
         payload["frequency_penalty"] = fp
-    return payload
+
+    timeout = int(llm_config.get("timeout_sec", 120))
+    data = _post_openai_with_retry(url, payload, headers, timeout)
+    _dump_api_log(url, payload, data, log_ctx=log_ctx)
+
+    return data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
 
 
 def generate_commentary_openai(
@@ -88,17 +101,12 @@ def generate_commentary_openai(
     max_tokens: int | None = None,
     log_ctx: dict | None = None,
 ) -> str:
-    """调用大模型 API（无历史，分析模型专用）。"""
-    url, headers, model = _build_openai_request(llm_config)
+    """调用商业大模型 API（无历史，分析模型专用）。"""
     messages = [
-        {"role": "system", "content": _no_think_system(system_prompt, model, llm_config)},
-        {"role": "user", "content": prompt},
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": prompt}
     ]
-    payload = _build_payload(model, messages, llm_config, max_tokens)
-    timeout = int(llm_config.get("timeout_sec", 120))
-    data = _post_openai_with_retry(url, payload, headers, timeout)
-    _dump_api_log(url, payload, data, log_ctx=log_ctx)
-    return data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+    return _execute_openai_chat(messages, llm_config, max_tokens, log_ctx)
 
 
 def generate_commentary_chat_openai(
@@ -106,18 +114,5 @@ def generate_commentary_chat_openai(
     llm_config: dict,
     max_tokens: int | None = None,
 ) -> str:
-    """调用大模型 API（带对话历史，风格模型专用）。"""
-    url, headers, model = _build_openai_request(llm_config)
-    # qwen3 关思考：首条 system 消息尾追加 /no_think
-    if messages and not bool(llm_config.get("enable_thinking", False)) and "qwen" in model.lower():
-        msgs = [dict(m) for m in messages]
-        if msgs[0].get("role") == "system":
-            msgs[0]["content"] = (msgs[0].get("content") or "") + "\n/no_think"
-        else:
-            msgs.insert(0, {"role": "system", "content": "/no_think"})
-        messages = msgs
-    payload = _build_payload(model, messages, llm_config, max_tokens)
-    timeout = int(llm_config.get("timeout_sec", 120))
-    data = _post_openai_with_retry(url, payload, headers, timeout)
-    _dump_api_log(url, payload, data)
-    return data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+    """调用商业大模型 API（带对话历史，风格模型专用）。"""
+    return _execute_openai_chat(messages, llm_config, max_tokens)

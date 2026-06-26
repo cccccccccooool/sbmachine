@@ -1,4 +1,5 @@
-"""
+"""6657 风格离线录像解说 AI 项目
+项目功能：搭建一个"整段 CS2 录像 -> 分回合时间线 -> 人设 LLM 解说文本 -> GPT-SoVITS 语音"的离线生成流水线。
 本文件功能：视频缝合、游戏画面分类与裁剪。
 
 启动方式：python tools/slicing/concat_and_crop_gameplay.py -i <input_dir> [选项]

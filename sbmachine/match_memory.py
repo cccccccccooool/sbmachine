@@ -1,5 +1,12 @@
-"""
-全场滚动记忆管理器。
+"""全场滚动记忆管理器。
+
+启动方式：被 sbmachine/phase3b_style.py 的 run_phase3b() 导入调用。
+输入数据流：demo rounds.json（含 winner/kills）和 phase3a 产出的 hype 值。
+输出数据流：render() 返回文本摘要注入 prompt；emotion_snapshot() 返回情绪积累值供 phase3b 读取。
+用法用途：逐局滚动更新全场记忆（比分/气势/击杀榜/转折点/情绪积累），注入每局解说 prompt。
+
+# 新增：情绪积累状态（沮丧/愤怒），权重全部从 Prompt/json/hype_rules.json 读取。
+# 沮丧/愤怒仅由全场积累驱动，不来自单局事件，每次增量极小。
 """
 from __future__ import annotations
 
@@ -11,8 +18,7 @@ _HALF_SIZE = 12
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _load_hype_rules() -> dict:
-    return json.loads((_PROJECT_ROOT / "Prompt" / "json" / "hype_rules.json").read_text(encoding="utf-8"))
+from sbmachine.common import load_hype_rules
 
 
 def _half_label(round_no: int) -> str:
@@ -57,9 +63,6 @@ class MatchMemory:
 
         momentum = ""
         if len(self._winner_seq) >= 2:
-            last = self._winner_seq[-1]
-            streak = sum(1 for _ in (w for w in reversed(self._winner_seq) if w == last))
-            # recount properly
             streak = 0
             for w in reversed(self._winner_seq):
                 if w == self._winner_seq[-1]:
@@ -85,7 +88,7 @@ class MatchMemory:
             lines.append(f"关键转折：{tp_str}")
 
         # 情绪积累状态（仅在有意义时输出，避免污染正常局）
-        rules = _load_hype_rules()
+        rules = load_hype_rules()
         em_thresholds = {k: v["threshold"] for k, v in rules["emotions"].items()}
         sad_val = round(self._emotion_acc.get("沮丧", 0.0), 3)
         ang_val = round(self._emotion_acc.get("愤怒", 0.0), 3)
@@ -123,7 +126,7 @@ class MatchMemory:
 
     def _update_emotion(self, winner: str, round_hype: float = 0.0) -> None:
         """纯规则解释器：读 hype_rules.json global_accumulation_rules 执行，代码无业务逻辑。"""
-        rules = _load_hype_rules()
+        rules = load_hype_rules()
         bias = rules.get("bias", {})
         clamp_cfg = rules.get("global_emotion_clamp", {})
         rule_list = rules.get("global_accumulation_rules", {}).get("rules", [])
@@ -224,11 +227,9 @@ class MatchMemory:
             self._turning_points = self._turning_points[-5:]
 
     def _is_match_point(self, next_round_no: int) -> bool:
-        # CS2 MR12：先到13胜，12胜即赛点（原 >=13 等于已分胜负，太晚）。
+        # CS2 MR12：先到13胜，12胜即赛点（>=13 等于已分胜负，太晚）。
         def _mp(score: int) -> bool:
             if score >= 12:
-                return True
-            if score >= 15 and (score - 15) % 3 == 2:  # OT 近似，罕见边界
                 return True
             return False
         return _mp(self._score_ct) or _mp(self._score_t)
