@@ -8,10 +8,10 @@
 
 输入一场 CS2 录像（视频 + demo），输出一段带情绪标签、口播腔调的解说语音。整条流水线全自动：
 
-- **视觉理解**：YOLO 门控 + VLM 逐帧描述画面
+- **视觉理解**：YOLO 门控 + 由事件驱动的VLM描述画面
 - **语义分析**：LLM 从帧序列提炼中性事实稿（analyst）
-- **风格化**：LLM 将事实稿转换为 6657 风格口播解说（style）
-- **语音合成**：GPT-SoVITS 输出音频，与视频拼装为最终成品
+- **风格化**：LLM 将事实稿转换为玩机器风格口播解说的解说稿（style）
+- **语音合成**：GPT-SoVITS 输出音频，与小局视频拼装为最终成品
 
 ---
 
@@ -21,27 +21,27 @@
 .dem + .mp4
     │
     ▼
-[demo parse]      Go 二进制解析 demo → 硬事实 JSON
+[demo parse]      解析 demo → demo的JSON格式数据
     │
     ▼
-[video marking]   MobileNetV3 分类帧类型（游戏/间歇）
+[video marking]   MobileNetV3 分类帧类型，然后输出一份标记的每秒的类别的json格式数据
     │
     ▼
-[preprocess]      回合分段 + 时间轴对齐
+[preprocess]      根据video marking给出的数据进行回合分段并将原视频切割成若干小对局 + 对齐视频和demo的时间轴
     │
     ▼
-[phase 2: vision] YOLO 过滤 → VLM 逐帧描述 → 视觉记录
+[phase 2: vision] YOLO 过滤非游戏画面内容 → 由事件驱动VLM进行描述画面内容 → 输出一份带有povplayer视角内容的demo数据
     │
     ▼
 [phase 3: semantic]
-    ├── 3a analyst  中性事实分析（云端 LLM API，并发）
-    └── 3b style    6657 风格口播（云端 LLM API）
+    ├── 3a analyst  输入phase 2产出的数据，根据提示词和窗口机制输出中性稿（未来将支持单独让3a使用api调用）
+    └── 3b style    输入3a产出的中性稿，根据内置database进行rag检索出相对应解说专业术语搭配经过训练过的模型（待做）输出一份具有玩机器风格的口播解说稿
     │
     ▼
 [phase 4: assemble] GPT-SoVITS TTS + 音视频拼装
     │
     ▼
-final_commentary.wav / final_video.mp4
+视频/音频
 ```
 
 ---
