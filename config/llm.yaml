@@ -13,6 +13,8 @@ llm:
 semantic:
   # analyst/style 均未设置时的统一回退值
   model: qwen3:8b
+  analyst_backend: api      # llma 后端：ollama / api；缺省回退 llm.backend
+  style_backend:   api      # llmb 后端：ollama / api；缺省回退 llm.backend
   # 双模型模式（phases.dual_model: true）
   # analyst_model: 分析 8B，只管事实准确，中性白描
   # style_model:   风格 8B，只管像 6657，加情绪标签
@@ -35,6 +37,7 @@ semantic:
 paths:
   catchphrase_library: Prompt/json/catchphrase_library.json
   commentary_demos:    Prompt/json/commentary_demos.json   # 真实解说稿 few-shot（仅 API 路径）
+  style_skill:         Prompt/skill/style_skill.md
   callouts_zh:         database/callouts_zh.json
   terms_zh:            database/terms_zh.json
   lineups_dir:         database/lineups

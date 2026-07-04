@@ -1,10 +1,12 @@
 # sbmachine
 
-根据 CS2 比赛视频和对应的 `.dem` demo 文件，自动生成具有 **6657 直播间风格**的中文解说语音。
+根据 CS2 比赛视频和对应的 `.dem` demo 文件，自动生成具有 **玩机器machine风格**的中文解说语音。
 
 ---
 
 ## 项目简介
+
+写在最前：当前项目仍然处于待完成状态，当前项目只上传了调用侧代码，训练侧代码还未上传到本仓库
 
 输入一场 CS2 录像（视频 + demo），输出一段带情绪标签、口播腔调的解说语音。整条流水线全自动：
 
@@ -50,7 +52,9 @@
 
 | 场景 | 显存需求 |
 |------|---------|
-| 完整运行（VLM + TTS） | 约 8~12 GB |
+| 完整运行本地运行 | 约 8~12 GB |
+| 云端api | 越6g左右 |
+
 
 ---
 
@@ -89,14 +93,9 @@ python api_v2.py -a 0.0.0.0 -p 9880
 
 ### 4. 配置 LLM API 密钥
 
-在项目根目录创建 `config.yaml`：
+在项目根目录中修改config.example.yaml
 
-```yaml
-secrets:
-  base_url: https://your-api-endpoint/v1   
-  api_key: sk-xxx
-  model:                           
-```
+查看和修改
 
 ---
 
@@ -128,7 +127,8 @@ paths:
 # pipeline.yaml — 按需开关阶段
 phases:
   phase2_vision:   true   # 已有 rounds_with_vision.json 可设 false 跳过
-  phase3_semantic: true
+  phase3a_semantic: true
+  phase3b_semantic: true
   phase4_assemble: true
 ```
 
@@ -170,13 +170,17 @@ python -m sbmachine.phase_tts      --config config/   # 仅 TTS 拼装
 - 提示词仍在调优中，phase 3 在复杂回合下可能出现幻觉或截断
 - 还未对第四部分放置参考音频片段，故若直接运行的话可能会报错运行不了
 - 此次上传了phase 3相关模型本地调用方案，但未做真正适配（如模型下载文档和database为空未做兼容），可能无法照常使用
+- 利用dot-skill尝试提炼了一版玩机器skill，但用起来感觉不佳，后续再进行优化
+- 给其他三个调用均设立了api调用方案
 
 ---
 
 ## 路线图
 
-- [ ] 微调 VLM，提升画面理解准确率
-- [ ] 微调 LLM analyst/style adapter
+- [X] 微调 VLM，提升画面理解准确率（vlm现在被定义为获取到导播当前视角，一切均以.dem为准）
+- [X] 微调 LLM analyst/style adapter （不在进行细致微调analyst，改由用提示词替代约束）
 - [ ] 补充并校准 `database/` 中的地图数据和术语表
-- [ ] Web UI 可视化运行与进度监控
-- [√] 调优第四步
+- [X] Web UI 可视化运行与进度监控 （不打算开发了，后续有精力再来）
+- [√] 调优第四步 （测试了下，基本可以做到正确根据情感标签调用对应片段）
+- [ ] 利用现成的api进行stf语料收集，后续再进行针对 style adapter的Lora训练
+- [ ] 寻找更好的skill方案

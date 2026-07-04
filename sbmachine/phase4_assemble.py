@@ -1,7 +1,6 @@
 """第四阶段（TTS 语音合成与逐局音画合成）。读取前一阶段带情感标签的解说文本，调用 TTS 客户端逐局合成语音，再用 ffmpeg 将每局解说音轨与游戏原声混音，产出逐局 mp4。"""
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -12,83 +11,11 @@ if str(PACKAGE_ROOT) not in sys.path:
 from tqdm import tqdm
 
 from sbmachine.common import load_config, require_path, resolve_path, write_json
+from sbmachine.phase4_av import _is_dummy_round, _mux_round_video, _run_ffmpeg, _tagged_text
 from sbmachine.schemas import AudioData, load_match, save_match
 
 
-def _tagged_text(round_record) -> str:
-    semantic = round_record.phase3_semantic
-    if semantic is None:
-        return ""
-    if semantic.emotion_segments:
-        return "".join(f"[{segment.emotion}]{segment.text}" for segment in semantic.emotion_segments)
-    return semantic.commentary_text
 
-
-def _concat_audio(parts: list[Path], output_path: Path) -> Path | None:
-    if not parts:
-        return None
-    try:
-        from pydub import AudioSegment
-
-        combined = AudioSegment.empty()
-        for part in parts:
-            combined += AudioSegment.from_file(part)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        combined.export(output_path, format=output_path.suffix.lower().lstrip(".") or "wav")
-        return output_path
-    except ImportError:
-        from audio_service.gpt_sovits_client import _concat_wav_stdlib
-
-        _concat_wav_stdlib(parts, output_path)
-        return output_path
-
-
-def _run_ffmpeg(args: list[str]) -> None:
-    subprocess.run(["ffmpeg", "-y", *args], check=True)
-
-
-def _mux_round_video(
-    clip_path: Path,
-    audio_path: Path,
-    output_path: Path,
-    game_vol: float = 0.25,
-    comm_vol: float = 1.0,
-) -> Path:
-    """将单局视频片段与解说音轨混音，游戏原声降至 game_vol，解说保持 comm_vol。"""
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    _run_ffmpeg(
-        [
-            "-i", str(clip_path),
-            "-i", str(audio_path),
-            "-filter_complex",
-            f"[0:a]volume={game_vol}[bg];[1:a]volume={comm_vol}[sp];[bg][sp]amix=inputs=2:duration=first[aout]",
-            "-map", "0:v:0",
-            "-map", "[aout]",
-            "-c:v", "copy",
-            "-shortest",
-            str(output_path),
-        ]
-    )
-    return output_path
-
-
-_DUMMY_PLACEHOLDERS = (
-    "中性稿缺失",
-    "暂无解说",
-    "跳过解说",
-)
-
-
-def _is_dummy_round(text: str) -> bool:
-    """哑局判定：commentary_text 为空、全为 [style error:、或含占位串。"""
-    if not text:
-        return True
-    stripped = text.strip()
-    # 占位串：来自 phase3b 的「中性稿缺失/暂无解说」分支
-    if any(ph in stripped for ph in _DUMMY_PLACEHOLDERS):
-        return True
-    lines = [seg.strip() for seg in stripped.split("[") if seg.strip()]
-    return all(seg.startswith("style error:") for seg in lines) if lines else True
 
 
 def run_phase4(

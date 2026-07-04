@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
 
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, retry_if_not_exception_type
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_not_exception_type
 import requests
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -129,110 +130,8 @@ def _output_cap(llm_config: dict, max_tokens: int | None) -> int | None:
     return cap if cap > 0 else None
 
 
-def generate_commentary(
-    prompt: str,
-    llm_config: dict,
-    system_prompt: str | None = None,
-    max_tokens: int | None = None,
-    log_ctx: dict | None = None,
-) -> str:
-    """调用 Ollama /api/generate（无历史，分析模型专用）。"""
-    import os
-
-    if system_prompt is None:
-        trained = PROJECT_ROOT / "training" / "persona_system_prompt.txt"
-        if trained.exists():
-            system_prompt = trained.read_text(encoding="utf-8").strip()
-        else:
-            fallback = PROJECT_ROOT / "Prompt" / "commentary_persona.txt"
-            if fallback.exists():
-                system_prompt = fallback.read_text(encoding="utf-8").strip()
-            else:
-                system_prompt = "你是 6657 风格的 CS2 中文解说,输出带 [情绪] 标签的口播解说。"
-
-    cap = _output_cap(llm_config, max_tokens)
-    backend = llm_config.get("backend", "api")
-
-    # 增加直观的 API 正在请求提示（防多线程终端死锁，改用原生 print）
-    ctx_hint = ""
-    if log_ctx:
-        r = log_ctx.get("round", "")
-        s = log_ctx.get("scene", "")
-        if r and s: ctx_hint = f" [{r} - {s}]"
-        elif r: ctx_hint = f" [{r}]"
-    
-    timeout = llm_config.get("timeout_sec", 300)
-    print(f"  >> [LLM API] 正在请求 {backend} 后端{ctx_hint}... (timeout: {timeout}s)", flush=True)
-
-    if backend == "api":
-        from sbmachine.llm_shim import generate_commentary_openai
-        return generate_commentary_openai(prompt, llm_config, system_prompt, max_tokens=cap, log_ctx=log_ctx)
-
-    url = os.getenv("AI6657_OLLAMA_URL") or llm_config.get("ollama_url", "http://127.0.0.1:11434/api/generate")
-    model = os.getenv("AI6657_LLM_MODEL") or llm_config.get("model", "qwen3:8b")
-
-    num_ctx = int(llm_config.get("num_ctx", 16384))
-    options: dict = {
-        "temperature": float(llm_config.get("temperature", 0.75)),
-        "num_ctx": num_ctx,
-        "repeat_penalty": float(llm_config.get("repeat_penalty", 1.15)),
-        "repeat_last_n": int(llm_config.get("repeat_last_n", 256)),
-    }
-    if cap:
-        options["num_predict"] = cap
-    if "qwen3" in model.lower():
-        options["think"] = False
-    payload = {
-        "model": model,
-        "system": system_prompt,
-        "prompt": prompt,
-        "stream": False,
-        "options": options,
-    }
-    response = _post_with_retry(url, payload, int(llm_config.get("timeout_sec", 300)))
-    data = response.json()
-    return (data.get("response") or "").strip()
-
-
-def generate_commentary_chat(
-    messages: list[dict],
-    llm_config: dict,
-    max_tokens: int | None = None,
-) -> str:
-    """调用 Ollama /api/chat（带对话历史，风格模型专用）。"""
-    import os
-
-    cap = _output_cap(llm_config, max_tokens)
-    backend = llm_config.get("backend", "ollama")
-    if backend == "api":
-        from sbmachine.llm_shim import generate_commentary_chat_openai
-        return generate_commentary_chat_openai(messages, llm_config, max_tokens=cap)
-
-    base_url = os.getenv("AI6657_OLLAMA_URL") or llm_config.get("ollama_url", "http://127.0.0.1:11434/api/generate")
-    # 显式构建 /api/chat 路径，避免 str.replace 在 URL 含该子串或已是 /api/chat 时静默出错
-    from urllib.parse import urlparse, urlunparse
-    parsed = urlparse(base_url)
-    chat_path = parsed.path.replace("/api/generate", "/api/chat") if "/api/generate" in parsed.path else "/api/chat"
-    chat_url = urlunparse(parsed._replace(path=chat_path))
-    model = os.getenv("AI6657_LLM_MODEL") or llm_config.get("model", "qwen3:8b")
-
-    num_ctx = int(llm_config.get("num_ctx", 16384))
-    options: dict = {
-        "temperature": float(llm_config.get("temperature", 0.75)),
-        "num_ctx": num_ctx,
-        "repeat_penalty": float(llm_config.get("repeat_penalty", 1.15)),
-        "repeat_last_n": int(llm_config.get("repeat_last_n", 256)),
-    }
-    if cap:
-        options["num_predict"] = cap
-    if "qwen3" in model.lower():
-        options["think"] = False
-    payload = {
-        "model": model,
-        "messages": messages,
-        "stream": False,
-        "options": options,
-    }
-    response = _post_with_retry(chat_url, payload, int(llm_config.get("timeout_sec", 300)))
-    data = response.json()
-    return (data.get("message", {}).get("content") or "").strip()
+def resolve_backend(config: dict, stage: str) -> str:
+    semantic = config.get("semantic", {}) if isinstance(config.get("semantic", {}), dict) else {}
+    llm = config.get("llm", {}) if isinstance(config.get("llm", {}), dict) else {}
+    env_name = f"AI6657_{stage.upper()}_BACKEND"
+    return str(os.getenv(env_name) or semantic.get(f"{stage}_backend") or llm.get("backend") or "ollama").lower()

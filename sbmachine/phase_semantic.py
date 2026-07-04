@@ -32,15 +32,24 @@ def main() -> int:
     rounds_p3 = require_path(paths.get("rounds_with_commentary_json", "output/sbmachine/rounds_with_commentary.json"), "paths.rounds_with_commentary_json")
     commentary = require_path(paths.get("commentary_json", "output/sbmachine/commentary.json"), "paths.commentary_json")
 
-    run_phase3a(rounds_path=rounds_p2, output_path=rounds_neutral, config_path=config_path, dry_run=args.dry_run)
-    run_phase3b(
-        neutral_path=rounds_neutral,
-        rounds_path=rounds_p2,
-        output_rounds_path=rounds_p3,
-        commentary_path=commentary,
-        config_path=config_path,
-        dry_run=args.dry_run,
-    )
+    phases = config.get("phases", {})
+    p3a = bool(phases.get("phase3a_semantic", phases.get("phase3_semantic", True)))
+    p3b = bool(phases.get("phase3b_semantic", phases.get("phase3_semantic", True)))
+
+    if p3a:
+        run_phase3a(rounds_path=rounds_p2, output_path=rounds_neutral, config_path=config_path, dry_run=args.dry_run)
+    if p3b:
+        if not rounds_neutral.exists() and not p3a:
+            print(f"[phase_semantic] missing neutral input for phase3b: {rounds_neutral}", file=sys.stderr)
+            return 2
+        run_phase3b(
+            neutral_path=rounds_neutral,
+            rounds_path=rounds_p2,
+            output_rounds_path=rounds_p3,
+            commentary_path=commentary,
+            config_path=config_path,
+            dry_run=args.dry_run,
+        )
     print("[phase_semantic] done")
     return 0
 

@@ -34,7 +34,8 @@ phases:
   video_marking: false      # 运行 MobileNetV3 自动预测视频画面类型 (game/break)
   preprocess_slice: false    # 视频标记(round_segmenter) + 视频切片(可选 ffmpeg 小片) → rounds.json
   phase2_vision: false
-  phase3_semantic: true
+  phase3a_semantic: true     # llma：事件行 → 中性稿
+  phase3b_semantic: true     # llmb：中性稿 → 6657 口播
   phase4_assemble: true
 
 # Debug 开关：开启后各阶段将输入/输出完整落盘到 output/debug_phase3/，正式跑时保持 false。

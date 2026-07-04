@@ -9,83 +9,34 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
-from sbmachine.common import load_config, require_path, resolve_path
+from sbmachine.common import load_config, require_path, resolve_backend, resolve_path
 from sbmachine.phase1_preprocess_slice import run_preprocess_slice
 from sbmachine.phase2_vision import run_phase2
 from sbmachine.phase3a_analyst import run_phase3a
 from sbmachine.phase3b_style import run_phase3b
 from sbmachine.phase4_assemble import run_phase4
+from sbmachine.upstream_jobs import _call_gpu_guard, _run_demo_parse, _run_video_marking
 
 
-def _call_gpu_guard(action: str, use_gpu_guard: bool) -> None:
-    """调用 gpu_guard 守护进程进行显存释放或恢复霸占"""
-    if not use_gpu_guard:
-        return
-    script = PACKAGE_ROOT / "tools" / "gpu_guard.py"
-    if script.exists():
-        try:
-            print(f"[gpu_guard] {action}...")
-            subprocess.run([sys.executable, str(script), action], check=False)
-        except Exception as e:
-            print(f"[gpu_guard] error: {e}")
+def _phase_enabled(phases: dict, new_key: str, old_key: str, default: bool = True) -> bool:
+    return bool(phases.get(new_key, phases.get(old_key, default)))
 
 
-def _run_demo_parse(paths: dict) -> None:
-    """调 tools/parse_demo.py(Go 解析器)把 .dem 解析成 output/demo 工件。"""
-    demo = resolve_path(paths.get("demo"))
-    if demo is None:
-        raise ValueError("phases.demo_parse 已开启,但 paths.demo 未配置 .dem 路径")
-    out_dir = str(paths.get("demo_output_dir", "output/demo"))
-    script = PACKAGE_ROOT / "tools" / "parse_demo.py"
-    print(f"[demo_parse] {demo} → {out_dir}")
-    result = subprocess.run([sys.executable, str(script), "--demo", str(demo), "--output-dir", out_dir])
-    if result.returncode != 0:
-        raise RuntimeError(f"parse_demo 失败 (exit {result.returncode})")
+def _phase2_needs_service(config: dict) -> bool:
+    return str(config.get("vision", {}).get("vlm", {}).get("backend", "local")).lower() != "api"
 
 
-def _run_video_marking(paths: dict, slicer_config: dict, use_gpu_guard: bool) -> Path:
-    """自动调用 tools/slicing/run_frame_type_slicer.py 进行画面预测和标记。"""
-    video = resolve_path(paths.get("video"))
-    if video is None:
-        raise ValueError("phases.video_marking 已开启,但 paths.video 未配置")
+def _phase3_enabled(phases: dict) -> tuple[bool, bool]:
+    return (
+        _phase_enabled(phases, "phase3a_semantic", "phase3_semantic", True),
+        _phase_enabled(phases, "phase3b_semantic", "phase3_semantic", True),
+    )
 
-    model = resolve_path(slicer_config.get("model", "models/qiepian/frame_type_classifier.pt"))
-    if model is None or not model.exists():
-        raise FileNotFoundError(f"未找到视频分类模型:{model}")
 
-    out_jsonl = PACKAGE_ROOT / "output" / "sbmachine" / "detector_rows.jsonl"
-    out_segments = PACKAGE_ROOT / "output" / "sbmachine" / "segments.json"
-    out_jsonl.parent.mkdir(parents=True, exist_ok=True)
+def _phase3_needs_ollama(phases: dict, config: dict) -> bool:
+    p3a, p3b = _phase3_enabled(phases)
+    return (p3a and resolve_backend(config, "analyst") != "api") or (p3b and resolve_backend(config, "style") != "api")
 
-    script = PACKAGE_ROOT / "tools" / "slicing" / "run_frame_type_slicer.py"
-    print(f"[video_marking] 开始预测视频帧分类: {video} → {out_jsonl}")
-
-    cmd = [
-        sys.executable,
-        str(script),
-        "--video", str(video),
-        "--model", str(model),
-        "--frame-output", str(out_jsonl),
-        "--segment-output", str(out_segments),
-        "--interval-sec", str(slicer_config.get("interval_sec", 1.0)),
-        "--smooth-window", str(slicer_config.get("smooth_window", 5)),
-        "--min-live-sec", str(slicer_config.get("min_live_sec", 20.0)),
-        "--bridge-gap-sec", str(slicer_config.get("bridge_gap_sec", 3.0)),
-    ]
-
-    demo_rounds = resolve_path(paths.get("demo_output_dir", "output/demo")) / "rounds.json"
-    if demo_rounds.exists():
-        cmd.extend(["--demo-rounds", str(demo_rounds)])
-
-    _call_gpu_guard("release", use_gpu_guard)
-    try:
-        result = subprocess.run(cmd)
-        if result.returncode != 0:
-            raise RuntimeError(f"run_frame_type_slicer 运行失败 (exit {result.returncode})")
-    finally:
-        _call_gpu_guard("resume", use_gpu_guard)
-
-    return out_jsonl
 
 
 def run_all(config_path, *, dry_run: bool = False) -> None:
@@ -163,29 +114,31 @@ def _run_phases_subprocess(config_path, phases: dict, config: dict, dry_run: boo
     try:
         if not one_at_a_time:
             # 不错峰：全部服务一次性拉起
-            if phases.get("phase2_vision", True):   mgr.start("vlm")
-            if phases.get("phase3_semantic", True): mgr.start("ollama")
+            if phases.get("phase2_vision", True) and _phase2_needs_service(config): mgr.start("vlm")
+            if any(_phase3_enabled(phases)) and _phase3_needs_ollama(phases, config): mgr.start("ollama")
             if phases.get("phase4_assemble", True): mgr.start("sovits")
 
         if phases.get("phase2_vision", True):
             _call_gpu_guard("release", use_gpu_guard)
             try:
-                if one_at_a_time:
+                if one_at_a_time and _phase2_needs_service(config):
                     mgr.start("vlm")
                 _spawn("sbmachine.phase_vision", config_path, dry_run)
             finally:
-                if one_at_a_time:
+                if one_at_a_time and _phase2_needs_service(config):
                     mgr.stop("vlm")
                 _call_gpu_guard("resume", use_gpu_guard)
 
-        if phases.get("phase3_semantic", True):
+        p3a, p3b = _phase3_enabled(phases)
+        if p3a or p3b:
             _call_gpu_guard("release", use_gpu_guard)
             try:
-                if one_at_a_time:
+                need_ollama = _phase3_needs_ollama(phases, config)
+                if one_at_a_time and need_ollama:
                     mgr.start("ollama")
                 _spawn("sbmachine.phase_semantic", config_path, dry_run)
             finally:
-                if one_at_a_time:
+                if one_at_a_time and _phase3_needs_ollama(phases, config):
                     mgr.stop("ollama")
                 _call_gpu_guard("resume", use_gpu_guard)
 
@@ -225,27 +178,35 @@ def _run_phases_multi_container(config_path, phases: dict, config: dict, paths: 
         if phases.get("phase2_vision", True):
             _call_gpu_guard("release", use_gpu_guard)
             try:
-                mgr.up_one("vision_service")
+                if _phase2_needs_service(config):
+                    mgr.up_one("vision_service")
                 run_phase2(rounds_path=rounds_p1, output_path=rounds_p2, config_path=config_path, dry_run=dry_run)
             finally:
-                mgr.down_one("vision_service")
+                if _phase2_needs_service(config):
+                    mgr.down_one("vision_service")
                 _call_gpu_guard("resume", use_gpu_guard)
 
-        if phases.get("phase3_semantic", True):
+        p3a, p3b = _phase3_enabled(phases)
+        if p3a or p3b:
             _call_gpu_guard("release", use_gpu_guard)
             try:
-                mgr.up_one("talk_service")
-                run_phase3a(rounds_path=rounds_p2, output_path=rounds_neutral, config_path=config_path, dry_run=dry_run)
-                run_phase3b(
-                    neutral_path=rounds_neutral,
-                    rounds_path=rounds_p2,
-                    output_rounds_path=rounds_p3,
-                    commentary_path=require_path(paths.get("commentary_json", "output/sbmachine/commentary.json"), "paths.commentary_json"),
-                    config_path=config_path,
-                    dry_run=dry_run,
-                )
+                need_ollama = _phase3_needs_ollama(phases, config)
+                if need_ollama:
+                    mgr.up_one("talk_service")
+                if p3a:
+                    run_phase3a(rounds_path=rounds_p2, output_path=rounds_neutral, config_path=config_path, dry_run=dry_run)
+                if p3b:
+                    run_phase3b(
+                        neutral_path=rounds_neutral,
+                        rounds_path=rounds_p2,
+                        output_rounds_path=rounds_p3,
+                        commentary_path=require_path(paths.get("commentary_json", "output/sbmachine/commentary.json"), "paths.commentary_json"),
+                        config_path=config_path,
+                        dry_run=dry_run,
+                    )
             finally:
-                mgr.down_one("talk_service")
+                if _phase3_needs_ollama(phases, config):
+                    mgr.down_one("talk_service")
                 _call_gpu_guard("resume", use_gpu_guard)
 
         if phases.get("phase4_assemble", True):
@@ -277,23 +238,26 @@ def _run_phases_inline(config_path, phases: dict, paths: dict,
         finally:
             _call_gpu_guard("resume", use_gpu_guard)
 
-    if phases.get("phase3_semantic", True):
+    p3a, p3b = _phase3_enabled(phases)
+    if p3a or p3b:
         _call_gpu_guard("release", use_gpu_guard)
         try:
-            run_phase3a(
-                rounds_path=rounds_p2,
-                output_path=rounds_neutral,
-                config_path=config_path,
-                dry_run=dry_run,
-            )
-            run_phase3b(
-                neutral_path=rounds_neutral,
-                rounds_path=rounds_p2,
-                output_rounds_path=rounds_p3,
-                commentary_path=require_path(paths.get("commentary_json", "output/sbmachine/commentary.json"), "paths.commentary_json"),
-                config_path=config_path,
-                dry_run=dry_run,
-            )
+            if p3a:
+                run_phase3a(
+                    rounds_path=rounds_p2,
+                    output_path=rounds_neutral,
+                    config_path=config_path,
+                    dry_run=dry_run,
+                )
+            if p3b:
+                run_phase3b(
+                    neutral_path=rounds_neutral,
+                    rounds_path=rounds_p2,
+                    output_rounds_path=rounds_p3,
+                    commentary_path=require_path(paths.get("commentary_json", "output/sbmachine/commentary.json"), "paths.commentary_json"),
+                    config_path=config_path,
+                    dry_run=dry_run,
+                )
         finally:
             _call_gpu_guard("resume", use_gpu_guard)
 

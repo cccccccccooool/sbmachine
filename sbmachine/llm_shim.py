@@ -19,7 +19,13 @@ def _load_secrets() -> dict:
     return data.get("secrets", {})
 
 
-def _dump_api_log(url: str, request_payload: dict, response_raw: dict, log_ctx: dict | None = None) -> None:
+def _dump_api_log(
+    url: str,
+    request_payload: dict,
+    response_raw: dict,
+    log_ctx: dict | None = None,
+    scope: str | None = None,
+) -> None:
     _LOG_DIR.mkdir(parents=True, exist_ok=True)
     today = datetime.date.today().strftime("%Y%m%d")
     log_path = _LOG_DIR / f"api_debug_{today}.jsonl"
@@ -28,6 +34,7 @@ def _dump_api_log(url: str, request_payload: dict, response_raw: dict, log_ctx: 
         entry.update(log_ctx)   # round/scene 排最前，一眼看清请求批次
     entry.update({
         "ts": datetime.datetime.now().isoformat(timespec="seconds"),
+        "scope": scope,
         "url": url,
         "request": request_payload,
         "response": response_raw,
@@ -53,13 +60,15 @@ def _execute_openai_chat(
     llm_config: dict,
     max_tokens: int | None = None,
     log_ctx: dict | None = None,
+    secret_scope: str | None = None,
 ) -> str:
     """内部通用的 OpenAI 格式 API 调用器。"""
     _s = _load_secrets()
-    base_url = _s.get("base_url") or os.getenv("AI6657_base_url") or llm_config.get("base_url", "https://api.openai.com/v1")
+    scoped = _s.get(secret_scope, {}) if secret_scope and isinstance(_s.get(secret_scope, {}), dict) else {}
+    base_url = scoped.get("base_url") or _s.get("base_url") or os.getenv("AI6657_base_url") or llm_config.get("base_url", "https://api.openai.com/v1")
     url = f"{base_url.rstrip('/')}/chat/completions"
-    api_key = _s.get("api_key") or os.getenv("AI6657_api_key") or llm_config.get("api_key", "sk-xxx")
-    model = _s.get("model") or os.getenv("AI6657_LLM_MODEL") or llm_config.get("model", "gpt-4o-mini")
+    api_key = scoped.get("api_key") or _s.get("api_key") or os.getenv("AI6657_api_key") or llm_config.get("api_key", "sk-xxx")
+    model = scoped.get("model") or _s.get("model") or os.getenv("AI6657_LLM_MODEL") or llm_config.get("model", "gpt-4o-mini")
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -89,7 +98,7 @@ def _execute_openai_chat(
 
     timeout = int(llm_config.get("timeout_sec", 120))
     data = _post_openai_with_retry(url, payload, headers, timeout)
-    _dump_api_log(url, payload, data, log_ctx=log_ctx)
+    _dump_api_log(url, payload, data, log_ctx=log_ctx, scope=secret_scope)
 
     return data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
 

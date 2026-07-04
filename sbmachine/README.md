@@ -110,6 +110,19 @@ python -m sbmachine.phase_tts      --config config/   # 只重跑「配音」
 
 ---
 
+## 开发者模块地图
+
+| 层 | 职责 | 文件 |
+|---|---|---|
+| 骨架 | 读配置、定阶段顺序、起停服务、循环调组件、写产物 | `run.py`、`run_llma_api.py`、`sbmachine/run_all.py`、`sbmachine/phase_vision.py`、`sbmachine/phase_semantic.py`、`sbmachine/phase_tts.py`、`sbmachine/phase2_vision.py`、`sbmachine/phase3a_analyst.py`、`sbmachine/phase3b_style.py`、`sbmachine/phase4_assemble.py` |
+| 模型后端组件 | 本地/云端模型 HTTP 调用 | `sbmachine/vlm_local.py`、`sbmachine/vlm_api.py`、`sbmachine/llma_local.py`、`sbmachine/llma_api.py`、`sbmachine/llmb_local.py`、`sbmachine/llmb_api.py`、`sbmachine/llm_shim.py` |
+| 领域组件 | 可单测的 OCR、切窗、prompt、hype、音视频工具 | `sbmachine/phase2_debug.py`、`sbmachine/phase2_timeline.py`、`sbmachine/phase2_ocr.py`、`sbmachine/phase2_background.py`、`sbmachine/hype_score.py`、`sbmachine/phase3a_payload.py`、`sbmachine/phase3a_windows.py`、`sbmachine/phase3a_prompt.py`、`sbmachine/phase3b_prompt.py`、`sbmachine/phase4_av.py`、`sbmachine/upstream_jobs.py` |
+| 共用件 | 路径、IO、config、prompt 加载 | `sbmachine/common.py`、`core/config_loader.py`、`core/prompt_loader.py` |
+
+依赖方向：骨架可 import 组件与共用件；组件只 import 其它组件与共用件，禁止 import 骨架文件。
+
+---
+
 <div align="center">
 
 **把录像丢进去，等一段会上头的解说出来。**

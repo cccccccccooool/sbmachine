@@ -5,7 +5,7 @@
 profile: analyst
 
 # LLM 训练基座（所有 LLM profile 共用；与 Ollama qwen3:8b 同源，adapter 可直挂）
-base_model: Qwen/Qwen3-8B
+base_model: Qwen/Qwen3-32B
 
 # SFT 数据目录（相对项目根）
 dataset_dir: data/sft

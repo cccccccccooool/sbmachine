@@ -55,9 +55,13 @@ vision:
     # 不设 VLM 预算上限：3s 网格 + 全部击杀/炸弹事件窗都真实调 VLM，不再降级。
 
   vlm:
+    backend: local
     endpoint: http://127.0.0.1:23333/v1/chat/completions
     model: Qwen/Qwen2.5-VL-3B-Instruct
     temperature: 0.2
     max_tokens: 256
     timeout_sec: 120
     batch_size: 1          # 一次打包多少张图发给 VLM（1=原串行）；40G 卡建议从 4 开始测
+    api:
+      base_url: ""
+      model: ""

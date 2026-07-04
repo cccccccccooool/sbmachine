@@ -55,9 +55,22 @@ class ServiceManager:
 
     # ── Ollama model name（从 config/llm.yaml semantic.model 读取） ──
 
-    def _ollama_model(self) -> str:
+    def _ollama_models(self) -> list[str]:
         svc_override = self.config.get("runtime", {}).get("services", {}).get("ollama", {}).get("model", "")
-        return svc_override or self.config.get("semantic", {}).get("model", "qwen3:8b")
+        if svc_override:
+            return [str(svc_override)]
+        phases = self.config.get("phases", {}) if isinstance(self.config.get("phases", {}), dict) else {}
+        semantic = self.config.get("semantic", {}) if isinstance(self.config.get("semantic", {}), dict) else {}
+        default_model = semantic.get("model", "qwen3:8b")
+        p3a = bool(phases.get("phase3a_semantic", phases.get("phase3_semantic", True)))
+        p3b = bool(phases.get("phase3b_semantic", phases.get("phase3_semantic", True)))
+        from sbmachine.common import resolve_backend
+        models = []
+        if p3a and resolve_backend(self.config, "analyst") != "api":
+            models.append(str(semantic.get("analyst_model") or default_model))
+        if p3b and resolve_backend(self.config, "style") != "api":
+            models.append(str(semantic.get("style_model") or default_model))
+        return list(dict.fromkeys(models or [str(default_model)]))
 
     # ── 健康轮询 ──
 
@@ -130,9 +143,9 @@ class ServiceManager:
 
         # Ollama 额外确保模型已拉取
         if name == "ollama":
-            model = self._ollama_model()
-            print(f"[services] ollama pull {model}", flush=True)
-            subprocess.run(["ollama", "pull", model], check=True)
+            for model in self._ollama_models():
+                print(f"[services] ollama pull {model}", flush=True)
+                subprocess.run(["ollama", "pull", model], check=True)
 
     # ── 停止 ──
 
