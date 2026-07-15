@@ -1,8 +1,6 @@
 # sbmachine 推理发布件
 
-> 本目录是 `ai-6657` 仓库的**推理链发布拷贝**，按 `docs/sbmachine_inventory.md` 白名单同步，只含端到端跑通 `python run.py` 所需资产。训练、数据清洗、诊断工具、测试、VLM 冷藏区**不在此目录**，开发请回主仓库。
 > 一句话：CS2 录像 + .dem → demo 硬事实 + YOLO/OCR 时间轴 → 规则集规划 → 双 LLM 中性稿/口播稿 → GPT-SoVITS 出声。
-> **铁律：硬事实唯一来源是 demo 文件**，画面只做定位锚点，不参与比分/击杀/炸弹判断。
 
 ## 目录构成（与清单一一对应）
 
@@ -24,14 +22,6 @@
 
 明确排除：`tools/start/gpu_guard.py`（个人工具，代码已做缺失守卫，静默跳过）、`tests/`、`training/`、`data_pipeline/`、`vlm/`、其余 tools 子目录。
 
-## 运行
-
-```bash
-python run.py --dry-run   # JSON 链路自检，不调任何 AI 模型；config_valid: true 即依赖链齐全
-python run.py             # 正式运行，读 config/
-```
-
-所有阶段开关、路径、服务拓扑都在 `config/pipeline.yaml`，不靠命令行参数。云端 API 版 phase3a 单独入口：`run_llma_api.py`（如未同步可从主仓库取）。
 
 ## 数据流（当前架构）
 
@@ -69,17 +59,29 @@ phase4   phase4_assemble.py  → TTS + 时间戳对齐混音 → rounds_final.js
 | `output/sbmachine/commentary.json` | 口播稿 + 情绪段 |
 | `output/sbmachine/rounds/round_NNN.wav/.mp4` | 逐局成品 |
 
-## 同步方式
-
-本目录内容由主仓库脚本重铺（保留 `.git` 与本 README）：
-
+## 使用方式
+调配好config/ 下的相关配置后直接在根目录下运行
 ```bash
-cd /d D:\code\ai-6657
-python _publish_sbmachine.py
+python run.py
 ```
+即可按照预设方案全链路拉起
+只不过当前第三阶段和第四阶段环境需求不同，docker我还没整理好公开出来，所以还是运行不了
 
-同步后在本目录跑 `python run.py --dry-run` 验证。**不要在本目录直接改代码**——改动会在下次同步时被覆盖，一律回主仓库改完再发布。
+## 当前进度
+原本打算用还是用vlm的，但是产出太过于糟糕，干脆直接砍了用povplayer来充当导播风味了
 
-## 权益提醒
+基本链路在cnb上能正常运行，GitHub这边我整理下在推送docker镜像
 
-请只在授权、自用或合规二创范围内使用真人声音和人设素材，不用于冒充本人、商业牟利、诈骗或误导观众。
+## 未来计划
+- 后面有精力将map的地图模型完善下，以启用附近人归类功能
+- 自己通过api模式收集到充足的stf数据后，尝试训练一个更适合的llm模型
+- 十分的想在8GB显存上部署，但是qwen3 8b性能实在过于弱，不得以才上qwen3 14b，后续数据上来了我看能不能蒸回8b
+- 严格来说第四部分还没完全完善，代表音频还没切分出来，并且调用端用的还是web页面，但我单轮测试通过了，后续在慢慢更改
+- 现在最大问题还是在第一二阶段速度过慢，未来搜寻别的方案
+- 真的无法复刻玩宝宝那种多姿多样的解说风格🥺🥺，我拼尽全力现在也只能说的是cs demo评判器，只不过是玩宝宝声音说出来的，等一轮数据收集完了再看看
+- GPT-SoVITS模型权重就不打算公布出来了
+
+## 致谢
+
+  - [demoinfocs-golang](https://github.com/markus-wa/demoinfocs-golang) —— 本项目的 CS2 demo 解析能力
+    完全构建在这个出色的 Go 库之上（MIT License）。感谢 @markus-wa 及所有贡献者
