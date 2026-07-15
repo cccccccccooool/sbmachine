@@ -37,6 +37,10 @@ def build_rounds_from_segments(video_path: Path, segments: list[dict], map_name:
                 score_after=score_after,
                 kind=kind,
                 source_reason=str(item.get("reason", "")),
+                demo_round_hint=item.get("demo_round_hint"),
+                align_offset=float(item["align_offset"]) if item.get("align_offset") is not None else None,
+                align_method=str(item.get("align_method", "")),
+                align_confidence=float(item["align_confidence"]) if item.get("align_confidence") is not None else None,
             )
         )
         previous_score = score_after
@@ -58,7 +62,7 @@ def run_phase1(
     terminal_grace_sec: float = 3.0,
     debug_path: Path | None = None,
 ) -> MatchPackage:
-    """执行第一阶段视频粗切分。可。（旧接口），也被 phase1_preprocess_slice.py 间接使用。"""
+    """执行第一阶段视频粗切分（旧接口），也被 phase1_preprocess_slice.py 间接使用。"""
     if segments_path is not None:
         payload = read_json(segments_path)
         if isinstance(payload, dict) and isinstance(payload.get("segments"), list):

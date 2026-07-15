@@ -1,4 +1,4 @@
-"""公共工具函数。提供路径解析、JSON读写、YAML加载、hype规则加载以及配置文件的集成读取支持。"""
+"""公共工具函数。提供路径解析、JSON 读写、hype 规则加载以及配置文件的集成读取支持。"""
 from __future__ import annotations
 
 import json
@@ -6,9 +6,6 @@ import os
 import sys
 from pathlib import Path
 from typing import Any
-
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_not_exception_type
-import requests
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -33,6 +30,20 @@ def require_path(value: str | Path | None, name: str, *, base: Path | None = Non
     return path
 
 
+def require_debug_output(path: Path, name: str) -> Path:
+    """防止单独运行的阶段覆盖已发布的流水线产物目录。"""
+    resolved = path.resolve()
+    for published_dir in (PROJECT_ROOT / "output" / "demo", PROJECT_ROOT / "output" / "sbmachine"):
+        try:
+            resolved.relative_to(published_dir.resolve())
+        except ValueError:
+            continue
+        raise ValueError(
+            f"{name} points at published output ({path}); use run.py or configure a custom debug output"
+        )
+    return path
+
+
 def read_json(path: Path) -> Any:
     """读取 JSON 文件并返回解析后的对象。"""
     return json.loads(path.read_text(encoding="utf-8"))
@@ -45,35 +56,15 @@ def write_json(path: Path, payload: Any) -> Path:
     return path
 
 
-def read_yaml(path: Path) -> dict:
-    """读取 YAML 文件，不存在时返回空 dict。"""
-    import yaml
-
-    if not path.exists():
-        return {}
-    with path.open("r", encoding="utf-8") as file:
-        return yaml.safe_load(file) or {}
-
-
 def load_config(path_or_dir: Path | str | None = None) -> dict:
-    """从 config/ 目录（合并所有 yaml 文件）或单个 yaml 文件中加载配置。     内部委托给 core.config_loader.load_config。"""
+    """从 config/ 目录（递归合并所有 yaml 文件）或单个 yaml 文件中加载配置。"""
     from core.config_loader import load_config as _load
     return _load(path_or_dir)
 
 
-def profile_value(config: dict, section: str, profile: str, default: Any = None) -> Any:
-    """从配置中按 profile 查找值。被各阶段脚本用于读取模型 profile 参数。"""
-    data = config.get(section, {})
-    if isinstance(data, dict):
-        profiles = data.get("profiles", {})
-        if isinstance(profiles, dict) and profile in profiles:
-            return profiles[profile]
-    return default
-
-
-
 # ── hype rules（模块级缓存，避免热路径每局读磁盘） ──
 _HYPE_RULES_CACHE: dict | None = None
+_CS_GAME_RULES_CACHE: dict | None = None
 
 
 def load_hype_rules() -> dict:
@@ -85,42 +76,13 @@ def load_hype_rules() -> dict:
     return _HYPE_RULES_CACHE
 
 
-def load_json_library(path: Path) -> dict[str, list[str]]:
-    """加载 bucket→片段列表 结构的 JSON 库（catchphrase / commentary_demos 共用）。
-
-    Returns an empty dict when the file is missing or unparseable.
-    Each entry may be a plain string or a dict with a 'text' key.
-    Keys starting with '_' are treated as metadata and skipped.
-    """
-    if not path.exists():
-        return {}
-    try:
-        lib = json.loads(path.read_text(encoding="utf-8"))
-        return {
-            bucket: [e.get("text", "") if isinstance(e, dict) else str(e) for e in entries]
-            for bucket, entries in lib.items()
-            if not bucket.startswith("_") and isinstance(entries, list)
-        }
-    except Exception:
-        return {}
-
-
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=10),
-    retry=retry_if_not_exception_type(requests.HTTPError),
-    reraise=True
-)
-def _post_with_retry(url: str, payload: dict, timeout: int):
-    """带重试的 HTTP POST 请求。
-
-    使用 tenacity 重试 3 次，仅对连接/超时类异常重试（HTTPError 包括 4xx 不重试），指数退避 2~10s。
-    """
-    # 强制忽略所有系统代理（Clash/v2ray 等），防止 127.0.0.1 被代理拦截导致 Connection Reset
-    proxies = {"http": None, "https": None}
-    response = requests.post(url, json=payload, timeout=timeout, proxies=proxies)
-    response.raise_for_status()  # 4xx 抒 HTTPError 不会被 tenacity 重试
-    return response
+def load_cs_game_rules() -> dict:
+    """加载 Phase3 的确定性 CS2 规则，热路径只读一次。"""
+    global _CS_GAME_RULES_CACHE
+    if _CS_GAME_RULES_CACHE is None:
+        path = PROJECT_ROOT / "Prompt" / "json" / "cs_game_rules.json"
+        _CS_GAME_RULES_CACHE = json.loads(path.read_text(encoding="utf-8"))
+    return _CS_GAME_RULES_CACHE
 
 
 def _output_cap(llm_config: dict, max_tokens: int | None) -> int | None:
@@ -131,7 +93,8 @@ def _output_cap(llm_config: dict, max_tokens: int | None) -> int | None:
 
 
 def resolve_backend(config: dict, stage: str) -> str:
+    """解析某阶段的后端：环境变量 > semantic 分阶段配置 > llm.backend > 默认 vllm。"""
     semantic = config.get("semantic", {}) if isinstance(config.get("semantic", {}), dict) else {}
     llm = config.get("llm", {}) if isinstance(config.get("llm", {}), dict) else {}
     env_name = f"AI6657_{stage.upper()}_BACKEND"
-    return str(os.getenv(env_name) or semantic.get(f"{stage}_backend") or llm.get("backend") or "ollama").lower()
+    return str(os.getenv(env_name) or semantic.get(f"{stage}_backend") or llm.get("backend") or "vllm").lower()

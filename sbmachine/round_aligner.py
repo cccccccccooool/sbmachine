@@ -37,26 +37,28 @@ def align_l0_score(segment: dict, score_ocr_frames: list[dict]) -> int | None:
 
 # ── L1: duration DP (Needleman-Wunsch) ──
 
-def _nw_align(seg_durs: list[float], demo_durs: list[float], gap_penalty: float = 8.0) -> list[int | None]:
+def _needleman_wunsch_align(seg_durs: list[float], demo_durs: list[float], gap_penalty: float = 8.0) -> list[int | None]:
     """把 seg_durs(视频段时长,可能是 demo 子集)对齐到 demo_durs 子序列。
 
     返回 mapping: mapping[i] = j 表示第 i 个视频段对应 demo 第 j 局(0-indexed)。
     跳过的 demo 局(丢段)用 gap_penalty 罚分。
     """
-    M, N = len(seg_durs), len(demo_durs)
-    if M == 0 or N == 0:
-        return [None] * M
+    seg_count, demo_count = len(seg_durs), len(demo_durs)
+    if seg_count == 0 or demo_count == 0:
+        return [None] * seg_count
+    if seg_count > demo_count:
+        return [None] * seg_count
 
     # dp[i][j] = 对齐 seg[0..i-1] 到 demo[0..j-1] 的最低罚分
-    INF = float("inf")
-    dp = [[INF] * (N + 1) for _ in range(M + 1)]
+    infinity = float("inf")
+    dp = [[infinity] * (demo_count + 1) for _ in range(seg_count + 1)]
     dp[0][0] = 0.0
     # 开头跳 demo 局免费(视频段是 demo 子集,可能从中间开始)
-    for j in range(1, N + 1):
+    for j in range(1, demo_count + 1):
         dp[0][j] = 0.0
 
-    for i in range(1, M + 1):
-        for j in range(1, N + 1):
+    for i in range(1, seg_count + 1):
+        for j in range(1, demo_count + 1):
             match_cost = abs(seg_durs[i - 1] - demo_durs[j - 1])
             dp[i][j] = min(
                 dp[i - 1][j - 1] + match_cost,   # 匹配
@@ -64,20 +66,20 @@ def _nw_align(seg_durs: list[float], demo_durs: list[float], gap_penalty: float 
             )
 
     # 回溯
-    mapping: list[int | None] = [None] * M
-    i, j = M, N
+    mapping: list[int | None] = [None] * seg_count
+    i = seg_count
+    j = min(range(1, demo_count + 1), key=lambda end: dp[seg_count][end])
     while i > 0:
         if j == 0:
             break
         match_cost = abs(seg_durs[i - 1] - demo_durs[j - 1])
-        if dp[i][j] == dp[i - 1][j - 1] + match_cost:
+        if math.isclose(dp[i][j], dp[i - 1][j - 1] + match_cost):
             mapping[i - 1] = j - 1   # 从 0 开始索引的 demo 回合
             i -= 1
             j -= 1
         else:
             j -= 1   # 跳过 demo 回合
     return mapping
-
 
 
 def align_l1_duration_with_tickrate(
@@ -92,7 +94,7 @@ def align_l1_duration_with_tickrate(
         freeze = float(r.get("freeze_end_tick", r.get("start_tick", 0)))
         end = float(r.get("end_tick", 0))
         demo_durs.append((end - freeze) / tick_rate)
-    return _nw_align(seg_durs, demo_durs, gap_penalty)
+    return _needleman_wunsch_align(seg_durs, demo_durs, gap_penalty)
 
 
 # ── L2: onset 互相关(校验 / 精修) ──

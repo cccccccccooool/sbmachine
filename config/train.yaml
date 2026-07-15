@@ -1,39 +1,77 @@
 # 训练配置 — 替代 AI6657_TRAIN_PROFILE / AI6657_DATASET_DIR 环境变量
 # 所有训练相关参数统一在此，scripts/ 和 data_pipeline/ 读此文件。
 
-# 当前训练目标：full | lite | analyst | style
-profile: analyst
+# 当前训练目标：full | lite | analyst | style。默认只训练 style；analyst 需显式放行。
+profile: style  # 当前训练目标：full、lite、analyst 或 style。
+analyst_enabled: false  # 是否显式允许 analyst profile 训练。
 
-# LLM 训练基座（所有 LLM profile 共用；与 Ollama qwen3:8b 同源，adapter 可直挂）
-base_model: Qwen/Qwen3-32B
+# 可复现训练身份。模型 revision 是 Hugging Face 不可变 commit SHA。
+seed: 6657  # 训练和数据切分随机种子。
+training_revision: w09-v1  # 训练配置/代码版本标识。
+training_image: ai-6657-train:w09-v1  # 训练容器镜像标签。
+
+# LLM 训练基座（所有 LLM profile 共用；与 vLLM Qwen/Qwen3-14B-AWQ 同源，adapter 可直挂）
+base_model: Qwen/Qwen3-14B-AWQ  # 所有 profile 共用的基础模型。
+base_model_revision: 31c69efc29464b6bb0aee1398b5a7b50a99340c3  # 不可变模型 revision。
 
 # SFT 数据目录（相对项目根）
-dataset_dir: data/sft
+dataset_dir: data/sft  # SFT 数据根目录。
 
 # 各 profile 对应的 LLaMA-Factory 数据集名（需在 training/dataset_info.json 注册）
 datasets:
-  full:    6657_persona_sft
-  lite:    6657_persona_sft
-  analyst: analyst_sft
-  style:   style_sft
+  full:    6657_persona_sft  # full profile 使用的训练集注册名。
+  lite:    6657_persona_sft  # lite profile 使用的训练集注册名。
+  analyst: analyst_sft  # analyst profile 使用的训练集注册名。
+  style:   style_sft  # style profile 使用的训练集注册名。
+
+# 每个验证集按 source_id -> match -> video 整组生成，禁止由训练框架逐行随机切分。
+eval_datasets:
+  full:    6657_persona_eval  # full profile 验证集注册名。
+  lite:    6657_persona_eval  # lite profile 验证集注册名。
+  analyst: analyst_eval  # analyst profile 验证集注册名。
+  style:   style_eval  # style profile 验证集注册名。
+
+# 独立测试集只用于训练完成后的最终门禁，不参与选模或调参。
+test_datasets:
+  full:    6657_persona_test  # full profile 测试集注册名。
+  lite:    6657_persona_test  # lite profile 测试集注册名。
+  analyst: analyst_test  # analyst profile 测试集注册名。
+  style:   style_test  # style profile 测试集注册名。
 
 # 各 profile 的 LoRA adapter 输出目录
 output_dirs:
-  full:    output/6657-full-lora
-  lite:    output/6657-lite-lora
-  analyst: output/6657-analyst-lora
-  style:   output/6657-style-lora
+  full:    output/6657-full-lora  # full profile LoRA 输出目录。
+  lite:    output/6657-lite-lora  # lite profile LoRA 输出目录。
+  analyst: output/6657-analyst-lora  # analyst profile LoRA 输出目录。
+  style:   output/6657-style-lora  # style profile LoRA 输出目录。
 
 # 各 profile 使用的 system prompt 文件（build_sft_dataset.py --system-prompt 的默认值）
 system_prompts:
-  full:    training/persona_system_prompt.txt
-  lite:    training/persona_system_prompt.txt
-  analyst: Prompt/analyst_system.txt
-  style:   Prompt/style_system.txt
+  full:    training/persona_system_prompt.txt  # full profile system prompt。
+  lite:    training/persona_system_prompt.txt  # lite profile system prompt。
+  analyst: Prompt/analyst_system.txt  # analyst profile system prompt。
+  style:   Prompt/style_system.txt  # style profile system prompt。
 
 # 各 profile 的输入 JSONL（build_sft_dataset.py --input 的默认值）
 input_files:
-  full:    data/sft/aligned_segments.jsonl
-  lite:    data/sft/aligned_segments.jsonl
-  analyst: data/sft/analyst_aligned.jsonl
-  style:   data/sft/style_aligned.jsonl
+  full:    data/sft/aligned_segments.jsonl  # full profile SFT 输入 JSONL。
+  lite:    data/sft/aligned_segments.jsonl  # lite profile SFT 输入 JSONL。
+  analyst: data/sft/analyst_aligned.jsonl  # analyst profile SFT 输入 JSONL。
+  style:   data/sft/style_aligned.jsonl  # style profile SFT 输入 JSONL。
+
+output_files:
+  full:    data/sft/6657_persona_sft.jsonl  # full profile 生成的 SFT JSONL。
+  lite:    data/sft/6657_persona_sft.jsonl  # lite profile 生成的 SFT JSONL。
+  analyst: data/sft/analyst_sft.jsonl  # analyst profile 生成的 SFT JSONL。
+  style:   data/sft/style_sft.jsonl  # style profile 生成的 SFT JSONL。
+
+split:
+  val_ratio: 0.1  # 验证集比例；按 source_id/match/video 分组切分。
+  test_ratio: 0.1  # 测试集比例；仅用于最终门禁。
+
+artifact_gates:
+  min_train_samples: 100  # 训练集最少样本数。
+  min_eval_samples: 20  # 验证集最少样本数。
+  min_test_samples: 20  # 测试集最少样本数。
+  max_eval_loss: 4.0  # 验证 loss 门禁上限。
+  max_test_loss: 4.0  # 测试 loss 门禁上限。

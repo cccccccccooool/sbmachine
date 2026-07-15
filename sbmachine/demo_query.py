@@ -9,9 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from sbmachine.common import read_json
+from tools.demo.demo_manifest import validate_demo_manifest
 
 
-def _norm_name(value: str) -> str:
+def _normalize_name(value: str) -> str:
     return "".join(ch for ch in str(value).casefold() if ch.isalnum())
 
 
@@ -45,7 +46,7 @@ class PlayerMatch:
 
 
 class DemoQuery:
-    """基于 tools/parse_demo.py 生成的文件的小型查询层。
+    """基于 tools/demo/parse_demo.py 生成的文件的小型查询层。
 
     Demo 的 tick 是从录像开始算起的绝对值。回合计时器锚点的转换方式如下:
     relative_sec = 115 - timer_seconds
@@ -56,6 +57,7 @@ class DemoQuery:
 
     def __init__(self, parsed_dir: Path) -> None:
         self.parsed_dir = parsed_dir
+        self.manifest: dict = {}
         self.meta: dict = {}
         self.rounds: list[dict] = []
         self.roster: list[dict] = []
@@ -65,9 +67,9 @@ class DemoQuery:
         self.smokes: list[dict] = []
         self.infernos: list[dict] = []
         self.flashes: list[dict] = []
-        self.callouts: dict[str, str] = {}
         self._ticks_df: Any | None = None
         self._tick_values: list[int] = []
+        self._tick_values_by_round: dict[int, list[int]] = {}
 
     @classmethod
     def load(cls, parsed_dir: str | Path) -> "DemoQuery":
@@ -90,13 +92,13 @@ class DemoQuery:
         return [(str(p.get("steamid", "")), str(p.get("name", ""))) for p in self.roster]
 
     def match_player(self, ocr_name: str) -> PlayerMatch:
-        target = _norm_name(ocr_name)
-        if not target:
+        target = _normalize_name(ocr_name)
+        if len(target) < 2:
             return PlayerMatch("", "", 0.0)
         best = PlayerMatch("", "", 0.0)
         for player in self.roster:
             name = str(player.get("name", ""))
-            candidate = _norm_name(name)
+            candidate = _normalize_name(name)
             if not candidate:
                 continue
             score = SequenceMatcher(None, target, candidate).ratio()
@@ -110,8 +112,6 @@ class DemoQuery:
         for item in self.rounds:
             if int(item.get("round_no", 0)) == int(round_no):
                 return item
-        if 1 <= int(round_no) <= len(self.rounds):
-            return self.rounds[int(round_no) - 1]
         raise IndexError(f"round_no not found in parsed demo: {round_no}")
 
     def tick_at(self, round_no: int, relative_sec: float) -> int:
@@ -125,25 +125,40 @@ class DemoQuery:
             return None
         return self.tick_at(round_no, 115.0 - timer_sec)
 
-    def state_at(self, tick: int) -> list[dict]:
+    def state_at(
+        self,
+        tick: int,
+        round_no: int,
+        max_distance_ticks: int | None = None,
+    ) -> list[dict]:
         self._ensure_ticks()
         if self._ticks_df is None or not self._tick_values:
             return []
         target = int(tick)
-        pos = bisect.bisect_left(self._tick_values, target)
+        current_round = int(round_no)
+        self.round_by_no(current_round)
+        round_ticks = self._tick_values_by_round.get(current_round, [])
+        if not round_ticks:
+            return []
+        if max_distance_ticks is None:
+            max_distance_ticks = max(1, int(round(self.tick_rate)))
+        max_distance = int(max_distance_ticks)
+        if max_distance < 0:
+            raise ValueError("max_distance_ticks must be non-negative")
+        pos = bisect.bisect_left(round_ticks, target)
         candidates = []
-        if pos < len(self._tick_values):
-            candidates.append(self._tick_values[pos])
         if pos > 0:
-            candidates.append(self._tick_values[pos - 1])
+            candidates.append(round_ticks[pos - 1])
+        if pos < len(round_ticks):
+            candidates.append(round_ticks[pos])
         nearest = min(candidates, key=lambda value: abs(value - target)) if candidates else target
-        rows = self._ticks_df[self._ticks_df["tick"] == nearest]
+        if abs(nearest - target) > max_distance:
+            return []
+        rows = self._ticks_df[
+            (self._ticks_df["round_no"] == current_round)
+            & (self._ticks_df["tick"] == nearest)
+        ]
         return [self._row_to_dict(row) for _, row in rows.iterrows()]
-
-    def callout_of(self, x: float, y: float, z: float = 0.0) -> str:
-        # Go parser 已将区域名称写入每个 tick 的 'callout' 列;
-        # 保留此方法兼容 API,state_at() 返回的行已包含 'callout'。
-        return ""
 
     def kills_between(self, tick_a: int, tick_b: int) -> list[dict]:
         lo, hi = sorted((int(tick_a), int(tick_b)))
@@ -165,49 +180,7 @@ class DemoQuery:
                 result.append({**g, "_event": "detonate"})
         return result
 
-    # ── lineup KB lookup ──
-
-    def lookup_lineup(
-        self,
-        nade_type: str,
-        from_callout: str,
-        to_callout: str,
-        *,
-        lineups_dir: "Path | None" = None,
-    ) -> dict | None:
-        """Match a grenade throw to a named lineup entry.
-
-        Matching is exact on (nade_type, from_callout, to_callout) with
-        case-insensitive substring tolerance:
-          - any entry whose from_callout is a substring of from_callout (or vice-versa)
-          - and same for to_callout
-        Returns first match or None.
-        """
-        if lineups_dir is None:
-            # default: database/lineups/ next to repo root
-            lineups_dir = Path(__file__).resolve().parents[1] / "database" / "lineups"
-        map_name = self.map_name or "unknown"
-        lineup_file = Path(lineups_dir) / f"{map_name}.json"
-        if not lineup_file.exists():
-            return None
-        try:
-            entries: list[dict] = json.loads(lineup_file.read_text(encoding="utf-8"))
-        except Exception:
-            return None
-        nt = nade_type.lower().replace("grenade", "he").replace("incendiary", "molotov")
-        fc = from_callout.lower()
-        tc = to_callout.lower()
-        for entry in entries:
-            et = entry.get("type", "").lower()
-            ef = entry.get("from_callout", "").lower()
-            eto = entry.get("to_callout", "").lower()
-            if et != nt:
-                continue
-            if (ef in fc or fc in ef) and (eto in tc or tc in eto):
-                return entry
-        return None
-
-    # ── new event query methods (demoinfocs-golang outputs) ──
+    # ── 新增事件查询方法（demoinfocs-golang 输出）──
 
     def damages_between(self, tick_a: int, tick_b: int) -> list[dict]:
         lo, hi = sorted((int(tick_a), int(tick_b)))
@@ -217,7 +190,7 @@ class DemoQuery:
         return [s for s in self.smokes if int(s.get("round_no", 0)) == int(round_no)]
 
     def smokes_active_at(self, tick: int) -> list[dict]:
-        """Smokes active (started, not yet expired) at the given tick."""
+        """返回在给定 tick 处仍处于活动状态（已生成、尚未消散）的烟雾。"""
         result = []
         for s in self.smokes:
             start = s.get("start_tick")
@@ -232,7 +205,7 @@ class DemoQuery:
         return [i for i in self.infernos if int(i.get("round_no", 0)) == int(round_no)]
 
     def infernos_active_at(self, tick: int) -> list[dict]:
-        """Infernos still burning at the given tick."""
+        """返回在给定 tick 处仍在燃烧的火焰。"""
         result = []
         for inf in self.infernos:
             start = inf.get("start_tick")
@@ -248,45 +221,52 @@ class DemoQuery:
         return [f for f in self.flashes if lo < int(f.get("tick", -1)) <= hi]
 
     def _load(self) -> None:
-        self.meta = self._read_optional_json("demo_meta.json", {})
-        self.rounds = list(self._read_optional_json("rounds.json", []))
-        self.roster = list(self._read_optional_json("roster.json", []))
-        self.kills = list(self._read_optional_json("kills.json", []))
-        self.grenades = list(self._read_optional_json("grenades.json", []))
-        self.damages = list(self._read_optional_json("damages.json", []))
-        self.smokes = list(self._read_optional_json("smokes.json", []))
-        self.infernos = list(self._read_optional_json("infernos.json", []))
-        self.flashes = list(self._read_optional_json("flashes.json", []))
-        callouts = self._read_optional_json("callouts.json", {})
-        self.callouts = callouts if isinstance(callouts, dict) else {}
+        self.manifest = validate_demo_manifest(self.parsed_dir)
+        self.meta = self._read_required_json("demo_meta.json", dict)
+        self.rounds = self._read_required_json("rounds.json", list)
+        self.roster = self._read_required_json("roster.json", list)
+        self.kills = self._read_required_json("kills.json", list)
+        self.grenades = self._read_required_json("grenades.json", list)
+        self.damages = self._read_required_json("damages.json", list)
+        self.smokes = self._read_required_json("smokes.json", list)
+        self.infernos = self._read_required_json("infernos.json", list)
+        self.flashes = self._read_required_json("flashes.json", list)
 
-    def _read_optional_json(self, name: str, default: Any) -> Any:
+    def _read_required_json(self, name: str, expected_type: type) -> Any:
         path = self.parsed_dir / name
-        if not path.exists():
-            return default
         val = read_json(path)
-        return default if val is None else val
+        if not isinstance(val, expected_type):
+            raise ValueError(f"{name} must contain a {expected_type.__name__}")
+        return val
 
     def _ensure_ticks(self) -> None:
         if self._ticks_df is not None:
             return
+        manifest_files = self.manifest.get("files", {})
         parquet_path = self.parsed_dir / "ticks.parquet"
         jsonl_path = self.parsed_dir / "ticks.jsonl"
         try:
             import pandas as pd
         except ImportError as exc:
             raise RuntimeError("DemoQuery.state_at requires pandas") from exc
-        if parquet_path.exists():
+        if "ticks.parquet" in manifest_files:
             df = pd.read_parquet(parquet_path)
-        elif jsonl_path.exists():
+        elif "ticks.jsonl" in manifest_files:
             rows = [json.loads(line) for line in jsonl_path.read_text(encoding="utf-8").splitlines() if line.strip()]
             df = pd.DataFrame(rows)
         else:
-            df = pd.DataFrame(columns=["tick"])
+            raise ValueError("validated demo manifest has no tick artifact")
         if "tick" in df.columns and not df.empty:
+            if "round_no" not in df.columns:
+                raise ValueError("tick artifact is missing round_no")
             df = df.copy()
             df["tick"] = df["tick"].astype(int)
+            df["round_no"] = df["round_no"].astype(int)
             self._tick_values = sorted(int(v) for v in df["tick"].drop_duplicates().tolist())
+            for round_no, rows in df.groupby("round_no"):
+                self._tick_values_by_round[int(round_no)] = sorted(
+                    int(value) for value in rows["tick"].drop_duplicates().tolist()
+                )
         self._ticks_df = df
 
     @staticmethod

@@ -20,7 +20,7 @@
 
 出来的是一段**配好解说的视频**——一个语气、口癖、上头方式都神似主播「6657」的 AI，从头到尾给你把这局比赛讲完。比分焦灼时它会紧张，残局翻盘时它会破音，连跪几局它甚至会开始阴阳怪气。
 
-它不是念稿机器。它**看得懂画面**（谁在架枪、烟往哪扔），**记得住全场**（上半场谁是大腿、哪一局是转折点、现在是不是赛点），所以越到后面讲得越带劲——就像一个真的从头看到尾的解说，而不是每局现场失忆。
+它不靠画面猜硬事实。demo 提供击杀、道具、比分和选手状态；规则集先筛出当前视角附近的人与动作；视觉模型只补充可见画面的氛围。全场记忆只累计 demo 已确认的比分、胜方连胜和击杀统计。
 
 ---
 
@@ -43,7 +43,7 @@
 
 ## 快速上手
 
-> 完整的环境安装（系统依赖、PyTorch、Ollama、TTS 权重）见 **[`docs/deploy.md`](../docs/deploy.md)**。这里只讲跑起来。
+> 完整的环境安装（系统依赖、PyTorch、vLLM、TTS 权重）见 **[`docs/deploy.md`](../docs/deploy.md)**。这里只讲跑起来。
 
 ### 1. 配一下要跑什么
 
@@ -56,7 +56,7 @@ paths:
 
 phases:                         # 想跑哪步开哪步
   preprocess_slice: true        # 切片对齐
-  phase2_vision: true           # 看画面
+  phase2_yolo: true             # 构建时间轴并识别 HUD/POV
   phase3_semantic: true         # 写解说
   phase4_assemble: true         # 配音合成
 ```
@@ -68,7 +68,7 @@ phases:                         # 想跑哪步开哪步
 ```yaml
 # config/pipeline.yaml
 runtime:
-  manage_services: true         # 流水线全程托管 VLM / LLM / TTS 的生命周期
+  manage_services: true         # 流水线全程托管 LLM / TTS 的生命周期
   one_model_at_a_time: true     # 单卡错峰：任意时刻卡上只有一个模型
 ```
 
@@ -89,7 +89,7 @@ python run.py
 每一步都能单独拎出来跑（前提是它依赖的服务已经起着）：
 
 ```bash
-python -m sbmachine.phase_vision   --config config/   # 只重跑「看画面」
+python -m sbmachine.phase_yolo     --config config/   # 只重跑「时间轴 + YOLO/POV」
 python -m sbmachine.phase_semantic --config config/   # 只重跑「写解说」
 python -m sbmachine.phase_tts      --config config/   # 只重跑「配音」
 ```
@@ -114,9 +114,9 @@ python -m sbmachine.phase_tts      --config config/   # 只重跑「配音」
 
 | 层 | 职责 | 文件 |
 |---|---|---|
-| 骨架 | 读配置、定阶段顺序、起停服务、循环调组件、写产物 | `run.py`、`run_llma_api.py`、`sbmachine/run_all.py`、`sbmachine/phase_vision.py`、`sbmachine/phase_semantic.py`、`sbmachine/phase_tts.py`、`sbmachine/phase2_vision.py`、`sbmachine/phase3a_analyst.py`、`sbmachine/phase3b_style.py`、`sbmachine/phase4_assemble.py` |
-| 模型后端组件 | 本地/云端模型 HTTP 调用 | `sbmachine/vlm_local.py`、`sbmachine/vlm_api.py`、`sbmachine/llma_local.py`、`sbmachine/llma_api.py`、`sbmachine/llmb_local.py`、`sbmachine/llmb_api.py`、`sbmachine/llm_shim.py` |
-| 领域组件 | 可单测的 OCR、切窗、prompt、hype、音视频工具 | `sbmachine/phase2_debug.py`、`sbmachine/phase2_timeline.py`、`sbmachine/phase2_ocr.py`、`sbmachine/phase2_background.py`、`sbmachine/hype_score.py`、`sbmachine/phase3a_payload.py`、`sbmachine/phase3a_windows.py`、`sbmachine/phase3a_prompt.py`、`sbmachine/phase3b_prompt.py`、`sbmachine/phase4_av.py`、`sbmachine/upstream_jobs.py` |
+| 骨架 | 读配置、定阶段顺序、起停服务、循环调组件、写产物 | `run.py`、`run_llma_api.py`、`sbmachine/run_all.py`、`sbmachine/phase_yolo.py`、`sbmachine/phase_semantic.py`、`sbmachine/phase_tts.py`、`sbmachine/phase2_yolo.py`、`sbmachine/phase3a_analyst.py`、`sbmachine/phase3b_style.py`、`sbmachine/phase4_assemble.py` |
+| 模型后端组件 | 本地/云端模型 HTTP 调用 | `sbmachine/vlm_local.py`、`sbmachine/vlm_api.py`、`sbmachine/llma_api.py`、`sbmachine/llmb_api.py`、`sbmachine/llm_shim.py` |
+| 领域组件 | 可单测的 OCR、场景/动作、空间、prompt、hype、音视频工具 | `sbmachine/phase2_debug.py`、`sbmachine/phase2_timeline.py`、`sbmachine/phase2_ocr.py`、`sbmachine/phase2_background.py`、`sbmachine/phase2_quality.py`、`sbmachine/scene_context.py`、`sbmachine/spatial_context.py`、`sbmachine/commentary_planner.py`、`sbmachine/hype_score.py`、`sbmachine/phase3a_payload.py`、`sbmachine/phase3a_prompt.py`、`sbmachine/phase3b_prompt.py`、`sbmachine/phase4_av.py`、`sbmachine/upstream_jobs.py` |
 | 共用件 | 路径、IO、config、prompt 加载 | `sbmachine/common.py`、`core/config_loader.py`、`core/prompt_loader.py` |
 
 依赖方向：骨架可 import 组件与共用件；组件只 import 其它组件与共用件，禁止 import 骨架文件。

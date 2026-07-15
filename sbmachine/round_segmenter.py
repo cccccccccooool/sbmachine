@@ -1,4 +1,4 @@
-"""帧类型切片适配器。负责将 tools/run_frame_type_slicer.py 输出的帧分类结果转换为统一 the VideoSegment 回合片段对象，供后续流程使用。"""
+"""帧类型切片适配器。负责将 tools/run_frame_type_slicer.py 输出的帧分类结果转换为统一的 VideoSegment 回合片段对象，供后续流程使用。"""
 from __future__ import annotations
 
 import json

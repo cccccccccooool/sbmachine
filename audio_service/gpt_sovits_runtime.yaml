@@ -1,0 +1,43 @@
+# GPT-SoVITS 推理和训练路径配置。
+# 路径可以是绝对路径，也可以是相对项目根目录的路径。
+gpt_sovits_root: external/GPT-SoVITS
+
+api:
+  host: 127.0.0.1
+  port: 9880
+  tts_config: GPT_SoVITS/configs/tts_infer.yaml
+
+model:
+  # Fill these after training, or set GPT_SOVITS_GPT_WEIGHTS /
+  # GPT_SOVITS_SOVITS_WEIGHTS in the runtime environment.
+  gpt_weights: ""
+  sovits_weights: ""
+
+reference:
+  audio_path: data/voice/reference/6657_ref.wav
+  prompt_text: "兄弟们你看这个位置，这波要出事了。"
+  prompt_lang: zh
+
+# 情绪 -> 参考音频映射。所谓“语音模板”就是每种情绪最典型的一小段解说音频。
+# 从已清洗的解说素材里，每种情绪挑 1~2 句最典型的当 ref 即可（情绪只认音色韵律，不进训练集）。
+# prompt_text 必须与该 ref 音频内容逐字一致。缺失的情绪会自动回退到上面的默认 reference。
+emotion_refs:
+  平述:
+    audio_path: data/voice/refs/calm.wav
+    prompt_text: "现在双方都还剩三个人，经济也都起来了。"
+  激动:
+    audio_path: data/voice/refs/excited.wav
+    prompt_text: "秒了！又秒一个！这枪太硬了！"
+  惊叹:
+    audio_path: data/voice/refs/amazed.wav
+    prompt_text: "不是兄弟们，这怎么打的啊，太离谱了！"
+
+dataset:
+  speaker: "6657"
+  language: zh
+  source_audio: data/audio/6657_ai_filtered.wav
+  segments_jsonl: data/audio/6657_segments_ai.jsonl
+  clip_dir: data/voice/clips
+  list_path: data/voice/6657.list
+  min_duration: 2.0
+  max_duration: 12.0

@@ -1,186 +1,85 @@
-# sbmachine
+# sbmachine 推理发布件
 
-根据 CS2 比赛视频和对应的 `.dem` demo 文件，自动生成具有 **玩机器machine风格**的中文解说语音。
+> 本目录是 `ai-6657` 仓库的**推理链发布拷贝**，按 `docs/sbmachine_inventory.md` 白名单同步，只含端到端跑通 `python run.py` 所需资产。训练、数据清洗、诊断工具、测试、VLM 冷藏区**不在此目录**，开发请回主仓库。
+> 一句话：CS2 录像 + .dem → demo 硬事实 + YOLO/OCR 时间轴 → 规则集规划 → 双 LLM 中性稿/口播稿 → GPT-SoVITS 出声。
+> **铁律：硬事实唯一来源是 demo 文件**，画面只做定位锚点，不参与比分/击杀/炸弹判断。
 
----
+## 目录构成（与清单一一对应）
 
-## 项目简介
+| 路径 | 角色 |
+|---|---|
+| `run.py` | 唯一启动入口（`sbmachine.run_all:run_all`） |
+| `docker-compose.yml`、`docker/` | 多容器服务拓扑与 vLLM/SoVITS entrypoint |
+| `.env.example`、`requirements.txt` | API 密钥模板与 Python 依赖 |
+| `sbmachine/` | 流水线全部阶段实现（phase1~4、preflight、schemas、llm_shim 等） |
+| `core/` | config_loader、prompt_loader、各 schema |
+| `vision_service/` | region_crops（phase2）、frame_type_model 等 |
+| `audio_service/` | emotion（phase3b）、gpt_sovits_client（phase4）、runtime yaml |
+| `config/` | pipeline/llm/vision/slicer/tts/audio/train.yaml 全套 |
+| `Prompt/` | analyst/style 提示词、`json/{cs_game_rules,hype_rules}.json`、skill |
+| `database/player_aliases.json` | 选手绰号注入 |
+| `database/maps/` | 人工地图空间关系模板（**当前为空**，spatial 层 fail-closed 降级，补模板即自动启用附近人归类） |
+| `models/` | YOLO / 帧分类权重 |
+| `tools/` | 仅 run 链子集：demo 解析（Go）、demo_manifest、debug/phase2、slicing 三件、simple_vlm_server |
 
-写在最前：当前项目仍然处于待完成状态，当前项目只上传了调用侧代码，训练侧代码还未上传到本仓库
-
-输入一场 CS2 录像（视频 + demo），输出一段带情绪标签、口播腔调的解说语音。整条流水线全自动：
-
-- **视觉理解**：YOLO 门控 + 由事件驱动的VLM描述画面
-- **语义分析**：LLM 从帧序列提炼中性事实稿（analyst）
-- **风格化**：LLM 将事实稿转换为玩机器风格口播解说的解说稿（style）
-- **语音合成**：GPT-SoVITS 输出音频，与小局视频拼装为最终成品
-
----
-
-## 流水线结构
-
-```
-.dem + .mp4
-    │
-    ▼
-[demo parse]      解析 demo → demo的JSON格式数据
-    │
-    ▼
-[video marking]   MobileNetV3 分类帧类型，然后输出一份标记的每秒的类别的json格式数据
-    │
-    ▼
-[preprocess]      根据video marking给出的数据进行回合分段并将原视频切割成若干小对局 + 对齐视频和demo的时间轴
-    │
-    ▼
-[phase 2: vision] YOLO 过滤非游戏画面内容 → 由事件驱动VLM进行描述画面内容 → 输出一份带有povplayer视角内容的demo数据
-    │
-    ▼
-[phase 3: semantic]
-    ├── 3a analyst  输入phase 2产出的数据，根据提示词和窗口机制输出中性稿（未来将支持单独让3a使用api调用）
-    └── 3b style    输入3a产出的中性稿，根据内置database进行rag检索出相对应解说专业术语搭配经过训练过的模型（待做）输出一份具有玩机器风格的口播解说稿
-    │
-    ▼
-[phase 4: assemble] GPT-SoVITS TTS + 音视频拼装
-    │
-    ▼
-视频/音频
-```
-
----
-
-## 硬件要求
-
-| 场景 | 显存需求 |
-|------|---------|
-| 完整运行本地运行 | 约 8~12 GB |
-| 云端api | 越6g左右 |
-
-
----
-
-## 安装
-
-### 1. Python 依赖
-
-```bash
-pip install -r requirements.txt
-```
-
-### 2. VLM 服务（Phase 2）
-
-项目使用 [lmdeploy](https://github.com/InternLM/lmdeploy) 部署 `Qwen2.5-VL-3B-Instruct`：
-
-```bash
-pip install lmdeploy
-
-# 首次运行会自动下载权重（约 7GB）
-python tools/simple_vlm_server.py
-# 服务默认监听 http://127.0.0.1:23333
-```
-
-
-### 3. GPT-SoVITS（Phase 4）
-
-```bash
-git clone https://github.com/RVC-Boss/GPT-SoVITS /opt/GPT-SoVITS
-cd /opt/GPT-SoVITS
-pip install -r requirements.txt
-
-# 下载预训练权重（见项目 README）
-# 启动 API 服务（由 sbmachine 自动调用，也可手动启动）
-python api_v2.py -a 0.0.0.0 -p 9880
-```
-
-### 4. 配置 LLM API 密钥
-
-在项目根目录中修改config.example.yaml
-
-查看和修改
-
----
-
-## 配置
-
-编辑 `config/` 目录下的各 YAML 文件：
-
-| 文件 | 职责 |
-|------|------|
-| `pipeline.yaml` | 阶段开关、路径、运行模式 |
-| `llm.yaml` | LLM 后端参数、语义分析配置 |
-| `vision.yaml` | VLM、YOLO、OCR、采样策略 |
-| `tts.yaml` | TTS 输出路径 |
-| `slicer.yaml` | 视频帧分类器配置 |
-| `audio.yaml` | 训练数据音频工具（不参与推理） |
-| `train.yaml` | LLM 微调配置（不参与推理） |
-
-详细参数说明见 [docs/config.md](docs/config.md)。
-
-最重要的几项：
-
-```yaml
-# pipeline.yaml — 指定输入文件
-paths:
-  demo:  data/raw/match.dem
-  video: data/raw/demo.mp4
-  map_name: de_dust2
-
-# pipeline.yaml — 按需开关阶段
-phases:
-  phase2_vision:   true   # 已有 rounds_with_vision.json 可设 false 跳过
-  phase3a_semantic: true
-  phase3b_semantic: true
-  phase4_assemble: true
-```
-
----
+明确排除：`tools/start/gpu_guard.py`（个人工具，代码已做缺失守卫，静默跳过）、`tests/`、`training/`、`data_pipeline/`、`vlm/`、其余 tools 子目录。
 
 ## 运行
 
-### 空跑自检
-
-不调用任何 AI，只验证回合/时间轴链路是否通畅：
-
 ```bash
-python run.py --dry-run
+python run.py --dry-run   # JSON 链路自检，不调任何 AI 模型；config_valid: true 即依赖链齐全
+python run.py             # 正式运行，读 config/
 ```
 
-### 完整运行
+所有阶段开关、路径、服务拓扑都在 `config/pipeline.yaml`，不靠命令行参数。云端 API 版 phase3a 单独入口：`run_llma_api.py`（如未同步可从主仓库取）。
 
-```bash
-python run.py
+## 数据流（当前架构）
+
+```
+.dem ─ tools/demo/parse_demo.py（Go 解析器，含 ammo/坐标/callout）→ output/demo/{rounds,kills,grenades,roster}.json + ticks.parquet
+mp4  ─ tools/slicing/run_frame_type_slicer.py（帧分类粗切）
+phase1   回合切分            → rounds.json
+phase2   phase2_yolo.py      → rounds_with_yolo.json + rounds_with_yolo_semantic.json（精简 DEM 事实帧）
+phase3a  phase3a_analyst.py  → 确定性规则层（scene 切窗 → 击杀语义 串/扫转/特 → 空间锚点/附近人 → commentary_plan）
+                               + 增量状态报告（首窗全量、之后仅报变化）
+                               → llma_input.json（LLM-A 输入中间产物，落盘留档）
+                               → LLM-A 逐窗中性稿 → rounds_with_neutral.json
+phase3b  phase3b_style.py    → 6657 风格口播 + 情绪标签 → rounds_with_commentary.json / commentary.json
+phase4   phase4_assemble.py  → TTS + 时间戳对齐混音 → rounds_final.json + rounds/round_NNN.wav/.mp4
 ```
 
-调度器会按 `pipeline.yaml` 的 `phases` 开关依次执行，并自动启停 VLM / TTS 服务。
+关键设计：**LLM-A 拿不到原始 players/events/ammo/坐标**——它们由规则层内部消化成 plan 与状态增量；模型只见 `commentary_plan` + 状态报告 + when/who 氛围帧，防止模型重做规则决策。
 
-### 单阶段运行
+## 服务与模型
 
-跳过调度器，手动启动所需服务后单独执行某阶段：
+| 角色 | 模型 | 后端 |
+|---|---|---|
+| LLM（analyst + style） | Qwen3 系（见 `config/llm.yaml`） | vLLM 本地容器 或 OpenAI 兼容 API（`.env` 配置，LLMA/LLMB 前缀可分别覆盖） |
+| TTS | GPT-SoVITS | `audio_service/` + api_v2 |
+
+单卡错峰由 `config/pipeline.yaml` 的 `runtime.manage_services` / `one_model_at_a_time` 控制，任意时刻卡上只有一个模型。
+
+## 关键产物
+
+| 文件 | 说明 |
+|---|---|
+| `output/sbmachine/rounds_with_yolo_semantic.json` | 精简 DEM 事实帧时间轴（players/events/ammo/坐标的磁盘落点） |
+| `output/sbmachine/llma_input.json` | LLM-A 输入定版（plan + state_block + 氛围帧），审计/复跑用 |
+| `output/sbmachine/rounds_with_neutral.json` | 中性稿 + hype |
+| `output/sbmachine/commentary.json` | 口播稿 + 情绪段 |
+| `output/sbmachine/rounds/round_NNN.wav/.mp4` | 逐局成品 |
+
+## 同步方式
+
+本目录内容由主仓库脚本重铺（保留 `.git` 与本 README）：
 
 ```bash
-python -m sbmachine.phase_vision   --config config/   # 仅视觉分析
-python -m sbmachine.phase_semantic --config config/   # 仅语义分析
-python -m sbmachine.phase_tts      --config config/   # 仅 TTS 拼装
+cd /d D:\code\ai-6657
+python _publish_sbmachine.py
 ```
 
----
+同步后在本目录跑 `python run.py --dry-run` 验证。**不要在本目录直接改代码**——改动会在下次同步时被覆盖，一律回主仓库改完再发布。
 
-## 开发现状
+## 权益提醒
 
-- VLM 和 LLM 尚未针对 CS2 场景做专项微调，输出质量有待提升
-- 提示词仍在调优中，phase 3 在复杂回合下可能出现幻觉或截断
-- 还未对第四部分放置参考音频片段，故若直接运行的话可能会报错运行不了
-- 此次上传了phase 3相关模型本地调用方案，但未做真正适配（如模型下载文档和database为空未做兼容），可能无法照常使用
-- 利用dot-skill尝试提炼了一版玩机器skill，但用起来感觉不佳，后续再进行优化
-- 给其他三个调用均设立了api调用方案
-
----
-
-## 路线图
-
-- [X] 微调 VLM，提升画面理解准确率（vlm现在被定义为获取到导播当前视角，一切均以.dem为准）
-- [X] 微调 LLM analyst/style adapter （不在进行细致微调analyst，改由用提示词替代约束）
-- [ ] 补充并校准 `database/` 中的地图数据和术语表
-- [X] Web UI 可视化运行与进度监控 （不打算开发了，后续有精力再来）
-- [√] 调优第四步 （测试了下，基本可以做到正确根据情感标签调用对应片段）
-- [ ] 利用现成的api进行stf语料收集，后续再进行针对 style adapter的Lora训练
-- [ ] 寻找更好的skill方案
+请只在授权、自用或合规二创范围内使用真人声音和人设素材，不用于冒充本人、商业牟利、诈骗或误导观众。

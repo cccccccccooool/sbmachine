@@ -1,14 +1,12 @@
-"""Frame-level visual dump schema for offline SFT data collection.
+"""帧级视觉转储 Schema，用于离线 SFT 数据采集。
 
 启动方式：被 data_pipeline/build_visual_sft_dataset.py 导入调用（fragment_dump_from_dict）。
 输入数据流：视觉转储 JSON（由感知模块对预切小局逐帧采集产出）。
 输出数据流：FragmentVisualDump.render() 返回结构化文本，供 SFT 数据构造时与主播原话配对。
 用法用途：定义帧级视觉转储的数据模型；每个采样帧携带视觉检测器读取到的所有信息，SFT builder 将这些转储与同一视频时间线上的解说转录配对。
 
-The input videos are assumed to be pre-cut into small live-game fragments.  This
-schema is deliberately simple: each sampled frame carries whatever the visual
-detectors can read, and the SFT builder aligns these dumps with commentator
-transcripts on the same video timeline.
+输入视频被假定为已预切成小段实况片段。本 Schema 刻意保持简单：每个采样帧携带
+视觉检测器能读到的所有信息，SFT builder 在同一视频时间线上将这些转储与解说转录对齐。
 """
 from __future__ import annotations
 
@@ -33,11 +31,11 @@ class PlayerUiState:
     state_color_debug: dict = field(default_factory=dict)
 
     def render(self) -> str:
-        """渲染单帧视觉信息为中文文本行。
+        """渲染单个选手 UI 状态为一行中文文本。
 
-        被 FragmentVisualDump.render() 逐帧调用。
+        被 FrameDump.render() 逐个选手调用。
 
-        无参数。返回多行字符串，包含时间戳、帧类型、计时器、比分、击杀栏、选手状态、场景提示。
+        无参数。返回如 "ZywOo / CT / HP100 / AWP / K3 / D1" 的斜杠分隔字符串；无任何字段时返回"未知选手"。
         """
         bits = []
         if self.name:

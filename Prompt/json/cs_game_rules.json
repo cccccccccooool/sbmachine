@@ -1,0 +1,112 @@
+{
+    "_comment":  "Deterministic commentary policy. Demo events and reviewed map templates are the only fact inputs.",
+    "version":  2,
+    "verified_at":  "2026-07-12",
+    "sources":  {
+                    "format":  "https://liquipedia.net/counterstrike/Counter-Strike_2",
+                    "defuse_and_plant":  "https://liquipedia.net/counterstrike/Cstrike_patches/Beta_5.0",
+                    "smoke_vs_incendiary":  "https://liquipedia.net/counterstrike/Incendiary_Grenade",
+                    "patch_2024_05_23":  "https://liquipedia.net/counterstrike/2024-05-23_Patch"
+                },
+    "scene":  {
+                  "prepare_sec":  5.0,
+                  "window_max_sec":  10.0,
+                  "window_min_sec":  3.0,
+                  "kill_chain_gap_sec":  3.0,
+                  "cross_stage_context_sec":  3.0
+              },
+    "actions":  {
+                    "effective_flash_min_sec":  2.0,
+                    "utility_throw_types":  [
+                                                "Smoke Grenade",
+                                                "Smoke",
+                                                "Molotov",
+                                                "Incendiary Grenade",
+                                                "Incendiary"
+                                            ],
+                    "global_fact_types":  [
+                                              "bomb_planted",
+                                              "defuse_started"
+                                          ],
+                    "local_only_types":  [
+                                             "kill",
+                                             "utility_throw",
+                                             "utility_effect",
+                                             "effective_flash"
+                                         ]
+                },
+    "weapon_classes":  {
+                           "long_guns_for_mismatch":  [
+                                                          "AK-47",
+                                                          "M4A4",
+                                                          "M4A1-S",
+                                                          "M4A1",
+                                                          "AWP"
+                                                      ],
+                           "automatic_for_spray_transfer":  [
+                                                                "AK-47",
+                                                                "M4A4",
+                                                                "M4A1-S",
+                                                                "M4A1",
+                                                                "Galil AR",
+                                                                "FAMAS",
+                                                                "AUG",
+                                                                "SG 553",
+                                                                "MAC-10",
+                                                                "MP9",
+                                                                "MP7",
+                                                                "UMP-45",
+                                                                "P90"
+                                                            ],
+                           "pistols":  [
+                                           "Glock-18",
+                                           "USP-S",
+                                           "P2000",
+                                           "P250",
+                                           "Five-SeveN",
+                                           "Tec-9",
+                                           "Desert Eagle",
+                                           "Dual Berettas",
+                                           "CZ75-Auto",
+                                           "CZ75 Auto",
+                                           "R8 Revolver"
+                                       ]
+                       },
+    "kill_semantics":  {
+                           "collateral_tick_tolerance":  2,
+                           "one_body_width_units":  32.0,
+                           "spray_transfer_min_kills":  2,
+                           "spray_transfer_max_kill_gap_sec":  1.2,
+                           "spray_transfer_min_ammo_drop":  2,
+                           "spray_transfer_min_angle_deg":  15.0,
+                           "narrate_priority_threshold":  0.65
+                       },
+    "narration":  {
+                      "max_kill_topics_per_window":  1,
+                      "max_plain_single_kills_per_round":  2,
+                      "max_supporting_actions":  2,
+                      "hard_fact_weight":  0.8,
+                      "commentary_plan_max_chars":  1200,
+                      "source_precedence":  [
+                                                "demo_events",
+                                                "deterministic_planner",
+                                                "map_template"
+                                            ]
+                  },
+    "spatial":  {
+                    "nearby_limit_per_side":  2,
+                    "local_action_radius_units":  800.0,
+                    "isolated_ratio_threshold":  1.6,
+                    "logical_level_default":  2,
+                    "director_focus":  {
+                                           "未下包":  "T",
+                                           "炸弹":  "CT"
+                                       },
+                    "isolated_opposite_side":  {
+                                                   "未下包":  "CT",
+                                                   "炸弹":  "T"
+                                               },
+                    "reviewed_template_only_manual_edges":  true,
+                    "uninitialized_relation":  "coordinate_unverified"
+                }
+}

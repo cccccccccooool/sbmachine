@@ -8,6 +8,13 @@ from typing import Any
 from sbmachine.common import read_json, write_json
 
 
+def _optional_float(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 @dataclass
 class Score:
     ct: int = 0
@@ -26,26 +33,23 @@ class Score:
 class KeyFrame:
     time_sec: float
     gate_reason: str
-    vlm_hint: str
-    vlm_response: str = ""
     yolo_tags: list[str] = field(default_factory=list)
     yolo_confidence: float = 0.0
-    global_vlm_output: str = ""
     ui_regions: list[dict] = field(default_factory=list)
     background_info: dict = field(default_factory=dict)
-    has_vlm: bool = True   # False = 背景行(仅 demo 事实,无画面解码)
+    has_frame: bool = True   # False = 背景行或视频解码失败，仅保留 demo 事实
 
 
 @dataclass
-class VisionData:
+class YoloData:
     background: list[dict] = field(default_factory=list)
     key_frames: list[KeyFrame] = field(default_factory=list)
     yolo_required: bool = False
     yolo_model: str = ""
-    detector_mode: str = "yolo_ui_locator_then_layered_vlm"
+    detector_mode: str = "demo_timeline_yolo_ocr"
     sample_interval_sec: float = 1.0
     total_yolo_frames: int = 0
-    total_vlm_calls: int = 0
+    detection_warnings: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -80,7 +84,10 @@ class RoundRecord:
     source_reason: str = ""
     segment_video: str = ""
     demo_round_hint: int | str | None = None
-    phase2_vision: VisionData | None = None
+    align_offset: float | None = None
+    align_method: str = ""
+    align_confidence: float | None = None
+    phase2_yolo: YoloData | None = None
     phase3_semantic: SemanticData | None = None
     phase4_audio: AudioData | None = None
 
@@ -96,7 +103,10 @@ class RoundRecord:
             source_reason=str(data.get("source_reason", data.get("reason", ""))),
             segment_video=str(data.get("segment_video", "")),
             demo_round_hint=data.get("demo_round_hint"),
-            phase2_vision=_vision_from_dict(data.get("_phase2_vision") or data.get("phase2_vision")),
+            align_offset=_optional_float(data.get("align_offset")),
+            align_method=str(data.get("align_method", "")),
+            align_confidence=_optional_float(data.get("align_confidence")),
+            phase2_yolo=_yolo_from_dict(data.get("_phase2_yolo") or data.get("phase2_yolo")),
             phase3_semantic=_semantic_from_dict(data.get("_phase3_semantic") or data.get("phase3_semantic")),
             phase4_audio=_audio_from_dict(data.get("_phase4_audio") or data.get("phase4_audio")),
         )
@@ -115,8 +125,14 @@ class RoundRecord:
             data["segment_video"] = self.segment_video
         if self.demo_round_hint is not None:
             data["demo_round_hint"] = self.demo_round_hint
-        if self.phase2_vision is not None:
-            data["_phase2_vision"] = asdict(self.phase2_vision)
+        if self.align_offset is not None:
+            data["align_offset"] = self.align_offset
+        if self.align_method:
+            data["align_method"] = self.align_method
+        if self.align_confidence is not None:
+            data["align_confidence"] = self.align_confidence
+        if self.phase2_yolo is not None:
+            data["_phase2_yolo"] = asdict(self.phase2_yolo)
         if self.phase3_semantic is not None:
             data["_phase3_semantic"] = asdict(self.phase3_semantic)
         if self.phase4_audio is not None:
@@ -169,13 +185,21 @@ def save_match(path: Path, match: MatchPackage) -> Path:
     return write_json(path, match.to_dict())
 
 
-def _vision_from_dict(data: Any) -> VisionData | None:
+def _yolo_from_dict(data: Any) -> YoloData | None:
     if not isinstance(data, dict):
         return None
-    frames = [KeyFrame(**{k: v for k, v in item.items() if k in KeyFrame.__dataclass_fields__}) for item in data.get("key_frames", [])]
+    frames = []
+    for item in data.get("key_frames", []):
+        copied_frame = dict(item)
+        if "has_frame" not in copied_frame:
+            copied_frame["has_frame"] = bool(copied_frame.get("has_vlm", False))
+        background_info = dict(copied_frame.get("background_info") or {})
+        background_info.pop("what", None)
+        copied_frame["background_info"] = background_info
+        frames.append(KeyFrame(**{k: v for k, v in copied_frame.items() if k in KeyFrame.__dataclass_fields__}))
     copied = dict(data)
     copied["key_frames"] = frames
-    return VisionData(**{k: v for k, v in copied.items() if k in VisionData.__dataclass_fields__})
+    return YoloData(**{k: v for k, v in copied.items() if k in YoloData.__dataclass_fields__})
 
 
 def _semantic_from_dict(data: Any) -> SemanticData | None:

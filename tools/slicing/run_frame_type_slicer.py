@@ -36,8 +36,10 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import queue
 import sys
+import uuid
 from collections import Counter, deque
 from pathlib import Path
 
@@ -45,14 +47,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# Avoid WinError 1114 DLL load failure on Windows when importing torch after PyQt5.
-# Importing torch before PyQt5 initializes resolves this conflict.
+# 在 PyQt5 之后再导入 torch 会触发 Windows WinError 1114 DLL 加载失败；
+# 提前导入 torch 可规避该冲突。
 try:
     import torch
 except ImportError:
     pass
 
 from vision_service.frame_type_model import load_checkpoint, predict_frame, resolve_device
+from tools.demo.demo_manifest import validate_demo_manifest
 
 
 def resolve_path(value: str | Path) -> Path:
@@ -78,7 +81,7 @@ def iter_video_frames(video_path: Path, interval_sec: float, start_sec: float, e
         raise RuntimeError(f"Cannot open video: {video_path}")
     try:
         ts = float(start_sec)
-        while end_sec is None or ts <= end_sec:
+        while end_sec is None or ts <= end_sec + 1e-9:
             cap.set(cv2.CAP_PROP_POS_MSEC, ts * 1000.0)
             ok, frame = cap.read()
             if not ok:
@@ -113,6 +116,24 @@ def estimate_probe_count(video_path: Path, interval_sec: float, start_sec: float
     if effective_end < start_sec:
         return 0
     return int(math.floor((effective_end - start_sec) / max(0.1, interval_sec))) + 1
+
+
+def worker_time_ranges(start_sec: float, end_sec: float, interval_sec: float, workers: int) -> list[tuple[float, float]]:
+    """将同一条全局采样网格切成互不重叠的闭区间范围，供多进程分片处理。"""
+    interval = max(0.1, float(interval_sec))
+    if end_sec < start_sec:
+        return []
+    probe_count = int(math.floor((end_sec - start_sec) / interval)) + 1
+    worker_count = min(max(1, int(workers)), probe_count)
+    base, remainder = divmod(probe_count, worker_count)
+    ranges = []
+    first_index = 0
+    for worker_id in range(worker_count):
+        count = base + (1 if worker_id < remainder else 0)
+        last_index = first_index + count - 1
+        ranges.append((start_sec + first_index * interval, start_sec + last_index * interval))
+        first_index = last_index + 1
+    return ranges
 
 
 def smooth_rows(rows: list[dict], window: int) -> list[dict]:
@@ -153,143 +174,27 @@ def crop_normalized(frame, roi: tuple[float, float, float, float] | None):
     return frame[iy1:iy2, ix1:ix2]
 
 
-_rapid_ocr_engine = None
-
-def get_rapid_ocr():
-    global _rapid_ocr_engine
-    if _rapid_ocr_engine is None:
-        try:
-            from rapidocr_onnxruntime import RapidOCR
-            _rapid_ocr_engine = RapidOCR()
-        except ImportError:
-            pass
-    return _rapid_ocr_engine
-
-
-def read_timer_value(frame, roi: tuple[float, float, float, float] | None) -> str:
-    if roi is None:
-        return ""
-    crop = crop_normalized(frame, roi)
-    raw_text = ""
-    try:
-        ocr = get_rapid_ocr()
-        if ocr:
-            result, _ = ocr(crop)
-            if result:
-                raw_text = " ".join(str(item[1]) for item in result if len(item) >= 2)
-    except Exception:
-        return ""
-    match = __import__("re").search(r"(\d{1,2})\s*[:：]\s*(\d{2})", raw_text)
-    if not match:
-        return ""
-    return f"{int(match.group(1))}:{match.group(2)}"
-
-
-def timer_to_seconds(value: str) -> float | None:
-    text = str(value or "").strip().replace("：", ":")
-    if ":" not in text:
-        return None
-    left, right = text.split(":", 1)
-    try:
-        minutes = int(left)
-        seconds = int(right[:2])
-    except ValueError:
-        return None
-    if not 0 <= seconds < 60:
-        return None
-    return float(minutes * 60 + seconds)
-
-
-def score_signature(frame, roi: tuple[float, float, float, float] | None, *, grid: tuple[int, int] = (16, 8)) -> list[float]:
-    if roi is None:
-        return []
-    try:
-        import cv2
-        import numpy as np
-
-        crop = crop_normalized(frame, roi)
-        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-        resized = cv2.resize(gray, grid, interpolation=cv2.INTER_AREA)
-        return [round(float(v) / 255.0, 4) for v in resized.flatten().tolist()]
-    except Exception:
-        return []
-
-
-def score_sig_distance(left: list[float], right: list[float]) -> float:
-    if not left or not right or len(left) != len(right):
-        return 0.0
-    return sum(abs(a - b) for a, b in zip(left, right)) / len(left)
-
-
-def first_valid_timer(rows: list[dict]) -> tuple[float, float] | None:
-    for row in rows:
-        sec = timer_to_seconds(str(row.get("timer_value", "")))
-        if sec is not None:
-            return float(row.get("time_sec", 0.0)), sec
-    return None
-
-
-def last_valid_timer(rows: list[dict]) -> tuple[float, float] | None:
-    for row in reversed(rows):
-        sec = timer_to_seconds(str(row.get("timer_value", "")))
-        if sec is not None:
-            return float(row.get("time_sec", 0.0)), sec
-    return None
-
-
-def segment_rows(rows: list[dict], segment: dict) -> list[dict]:
-    start = float(segment["start_sec"])
-    end = float(segment["end_sec"])
-    return [row for row in rows if start <= float(row.get("time_sec", 0.0)) <= end]
-
-
 def should_bridge_segments(
     left: dict,
     right: dict,
     rows: list[dict],
     *,
     bridge_gap_sec: float,
-    bridge_gap_max_sec: float,
-    timer_tolerance_sec: float,
-    score_sig_threshold: float,
 ) -> tuple[bool, dict]:
     gap = float(right["start_sec"]) - float(left["end_sec"])
-    left_rows = segment_rows(rows, left)
-    right_rows = segment_rows(rows, right)
-    left_timer = last_valid_timer(left_rows)
-    right_timer = first_valid_timer(right_rows)
     decision = {"gap_sec": round(gap, 3), "bridge": False, "reason": "fallback_no_bridge"}
-    if right_timer and right_timer[1] >= 110.0:
-        decision.update({"reason": "timer_new_round", "right_timer_sec": right_timer[1]})
-        return False, decision
-    if left_timer and right_timer and gap <= bridge_gap_max_sec:
-        elapsed = float(right["start_sec"]) - float(left["end_sec"])
-        expected = max(0.0, left_timer[1] - elapsed)
-        error = abs(right_timer[1] - expected)
-        if error <= timer_tolerance_sec:
-            decision.update(
-                {
-                    "bridge": True,
-                    "reason": "timer_continuity",
-                    "left_timer_sec": left_timer[1],
-                    "right_timer_sec": right_timer[1],
-                    "timer_error_sec": round(error, 3),
-                }
-            )
-            return True, decision
-    left_sig = next((row.get("score_sig", []) for row in reversed(left_rows) if row.get("score_sig")), [])
-    right_sig = next((row.get("score_sig", []) for row in right_rows if row.get("score_sig")), [])
-    sig_dist = score_sig_distance(left_sig, right_sig)
-    if sig_dist > score_sig_threshold:
-        decision.update({"reason": "score_signature_changed", "score_sig_distance": round(sig_dist, 4)})
+    if any(
+        bool(row.get("is_replay", False))
+        for row in rows
+        if float(left["end_sec"]) < float(row.get("time_sec", 0.0)) < float(right["start_sec"])
+    ):
+        decision["reason"] = "replay_gap"
         return False, decision
     if gap <= bridge_gap_sec:
-        decision.update({"bridge": True, "reason": "fallback_short_gap", "score_sig_distance": round(sig_dist, 4)})
+        decision.update({"bridge": True, "reason": "fallback_short_gap"})
         return True, decision
-    decision.update({"reason": "fallback_gap_too_large", "score_sig_distance": round(sig_dist, 4)})
+    decision["reason"] = "fallback_gap_too_large"
     return False, decision
-
-
 
 
 def build_segments_v2(
@@ -298,15 +203,12 @@ def build_segments_v2(
     live_label: str,
     min_live_sec: float,
     bridge_gap_sec: float,
-    bridge_gap_max_sec: float,
-    timer_tolerance_sec: float = 3.0,
-    score_sig_threshold: float = 0.12,
 ) -> list[dict]:
     raw_segments = []
     active = None
     for row in rows:
         ts = float(row["time_sec"])
-        is_live = row.get("smooth_label") == live_label
+        is_live = row.get("smooth_label") == live_label and not bool(row.get("is_replay", False))
         if is_live and active is None:
             active = {"start_sec": ts, "end_sec": ts, "frames": 0, "bridge_decisions": []}
         if is_live and active is not None:
@@ -328,9 +230,6 @@ def build_segments_v2(
             segment,
             rows,
             bridge_gap_sec=bridge_gap_sec,
-            bridge_gap_max_sec=bridge_gap_max_sec,
-            timer_tolerance_sec=timer_tolerance_sec,
-            score_sig_threshold=score_sig_threshold,
         )
         merged[-1].setdefault("bridge_decisions", []).append(decision)
         if bridge:
@@ -349,12 +248,14 @@ def build_segments_v2(
 def validate_segments_with_demo(segments: list[dict], rows: list[dict], demo_rounds_path: Path | None) -> list[dict]:
     if demo_rounds_path is None or not demo_rounds_path.exists():
         for segment in segments:
-            segment.setdefault("demo_round_hint", "unmatched")
+            segment["demo_round_hint"] = "unmatched"
+            segment["align_method"] = "unmatched"
         return segments
+    manifest = validate_demo_manifest(demo_rounds_path.parent)
     rounds = json.loads(demo_rounds_path.read_text(encoding="utf-8"))
 
-    # Use duration-DP alignment instead of positional mapping.
-    # Positional mapping (rounds[i-1]) silently drifts when segments < demo rounds.
+    # 用基于时长的 DP 对齐，而非按位置映射。
+    # 按位置映射（rounds[i-1]）在片段数少于 demo 回合数时会悄悄发生错位漂移。
     try:
         import sys
         from pathlib import Path as _Path
@@ -362,10 +263,10 @@ def validate_segments_with_demo(segments: list[dict], rows: list[dict], demo_rou
         if _root not in sys.path:
             sys.path.insert(0, _root)
         from sbmachine.round_aligner import align_segments, apply_align_results
-        results = align_segments(segments, rounds, tick_rate=64.0)
+        results = align_segments(segments, rounds, tick_rate=float(manifest["tick_rate"]))
         apply_align_results(segments, results)
     except Exception as exc:
-        # Fallback: mark all unmatched — never silently use position mapping
+        # 兜底：全部标记为未匹配——绝不静默退回按位置映射
         for segment in segments:
             segment["demo_round_hint"] = "unmatched"
             segment["align_method"] = f"error:{type(exc).__name__}"
@@ -401,21 +302,22 @@ def build_segments_from_markers(markers_path: Path) -> list[dict]:
             continue
         tags.append(marker)
     return [segment for segment in segments if float(segment.get("duration_sec", 0)) > 0]
-def process_video_chunk_with_queue(kwargs: dict, queue) -> None:
+
+
+def process_video_chunk_with_queue(kwargs: dict, result_queue) -> None:
     worker_id = kwargs["worker_id"]
     video_path = kwargs["video_path"]
     model_path = kwargs["model_path"]
     device = kwargs["device"]
-    
+
     try:
         model, labels, img_size, _ = load_checkpoint(model_path, device)
-        
+
         replay_model = None
         replay_labels = []
         replay_img_size = 224
         if kwargs.get("replay_model_path"):
             replay_model, replay_labels, replay_img_size, _ = load_checkpoint(kwargs["replay_model_path"], device)
-            
         rows = []
         index = 0
         for ts, frame in iter_video_frames(video_path, kwargs["interval_sec"], kwargs["start_sec"], kwargs["end_sec"]):
@@ -434,46 +336,101 @@ def process_video_chunk_with_queue(kwargs: dict, queue) -> None:
             else:
                 row["is_replay"] = False
                 row["frame_type_source"] = "game_break_model"
-            if row["label"] == kwargs["game_label"]:
-                row["timer_value"] = read_timer_value(frame, kwargs["timer_roi"])
-                row["score_sig"] = score_signature(frame, kwargs["score_roi"])
-            else:
-                row["timer_value"] = ""
-                row["score_sig"] = []
             rows.append(row)
             index += 1
             if index % 10 == 0:
-                queue.put((worker_id, index, None))
-        
-        queue.put((worker_id, index, rows))
+                result_queue.put((worker_id, index, None))
+
+        result_queue.put((worker_id, index, {"rows": rows, "labels": labels}))
     except Exception as e:
-        queue.put((worker_id, -1, str(e)))
+        result_queue.put((worker_id, -1, str(e)))
+
+
+def write_outputs_atomically(frame_output: Path, segment_output: Path, rows: list[dict], segment_payload: dict) -> None:
+    targets = (frame_output, segment_output)
+    if frame_output.resolve() == segment_output.resolve():
+        raise ValueError("frame-output and segment-output must be different paths")
+    for target in targets:
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+    token = uuid.uuid4().hex
+    frame_temp = frame_output.with_name(f".{frame_output.name}.{token}.tmp")
+    segment_temp = segment_output.with_name(f".{segment_output.name}.{token}.tmp")
+    temps = (frame_temp, segment_temp)
+    backups: dict[Path, Path] = {}
+    promoted: list[Path] = []
+    committed = False
+    try:
+        with frame_temp.open("x", encoding="utf-8", newline="\n") as file:
+            for row in rows:
+                file.write(json.dumps(row, ensure_ascii=False) + "\n")
+        segment_temp.write_text(
+            json.dumps(segment_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        for target in targets:
+            if target.exists() or target.is_symlink():
+                backup = target.with_name(f".{target.name}.{token}.backup")
+                os.replace(target, backup)
+                backups[target] = backup
+        for temp, target in zip(temps, targets):
+            os.replace(temp, target)
+            promoted.append(target)
+        committed = True
+    except BaseException:
+        for target in reversed(promoted):
+            try:
+                target.unlink()
+            except FileNotFoundError:
+                pass
+        for target, backup in reversed(list(backups.items())):
+            if backup.exists() and not target.exists():
+                os.replace(backup, target)
+        raise
+    finally:
+        for temp in temps:
+            try:
+                temp.unlink()
+            except FileNotFoundError:
+                pass
+        if committed:
+            for backup in backups.values():
+                try:
+                    backup.unlink()
+                except OSError:
+                    pass
 
 
 def run(args: argparse.Namespace) -> tuple[Path, Path]:
     device = resolve_device(args.device)
     video_path = resolve_path(args.video)
     model_path = resolve_path(args.model)
-    model, labels, img_size, _checkpoint = load_checkpoint(model_path, device)
-    replay_model = None
-    replay_labels = []
-    replay_img_size = 224
     replay_roi = parse_roi(args.replay_roi)
-    timer_roi = parse_roi(args.timer_roi)
-    score_roi = parse_roi(args.score_roi)
-    if args.replay_model:
-        replay_model, replay_labels, replay_img_size, _replay_checkpoint = load_checkpoint(resolve_path(args.replay_model), device)
     rows = []
     total = estimate_probe_count(video_path, args.interval_sec, args.start_sec, args.end_sec)
+    workers = max(1, int(getattr(args, "workers", 1)))
+    if workers > 1 and total is None:
+        print("video duration unknown; falling back to one worker and reading until EOF", flush=True)
+        workers = 1
+
     print(f"model: {model_path}")
-    if replay_model is not None:
+    if args.replay_model:
         print(f"replay_model: {resolve_path(args.replay_model)}")
         print(f"replay_roi: {args.replay_roi or 'full_frame'}")
     print(f"video: {video_path}")
-    print(f"labels: {', '.join(labels)}")
     print(f"estimated_frames: {total if total is not None else 'unknown'}")
-    workers = getattr(args, "workers", 1)
+
+    labels: list[str] = []
     if workers <= 1:
+        model, labels, img_size, _checkpoint = load_checkpoint(model_path, device)
+        replay_model = None
+        replay_labels = []
+        replay_img_size = 224
+        if args.replay_model:
+            replay_model, replay_labels, replay_img_size, _replay_checkpoint = load_checkpoint(
+                resolve_path(args.replay_model), device
+            )
+        print(f"labels: {', '.join(labels)}")
         for index, (ts, frame) in enumerate(iter_video_frames(video_path, args.interval_sec, args.start_sec, args.end_sec), start=1):
             pred = predict_frame(model, labels, frame, img_size, device)
             row = {"time_sec": ts, **pred}
@@ -490,12 +447,6 @@ def run(args: argparse.Namespace) -> tuple[Path, Path]:
             else:
                 row["is_replay"] = False
                 row["frame_type_source"] = "game_break_model"
-            if row["label"] == args.game_label:
-                row["timer_value"] = read_timer_value(frame, timer_roi)
-                row["score_sig"] = score_signature(frame, score_roi)
-            else:
-                row["timer_value"] = ""
-                row["score_sig"] = []
             rows.append(row)
             should_report = index == 1 or index % max(1, args.progress_every) == 0
             if total is not None:
@@ -512,16 +463,15 @@ def run(args: argparse.Namespace) -> tuple[Path, Path]:
         eff_end = args.end_sec if args.end_sec is not None else duration
         if eff_end <= eff_start:
             eff_end = eff_start + 1.0
-        chunk_sec = (eff_end - eff_start) / workers
-        
+        worker_ranges = worker_time_ranges(eff_start, eff_end, args.interval_sec, workers)
+        workers = len(worker_ranges)
+
         import multiprocessing
         ctx = multiprocessing.get_context("spawn")
-        queue = ctx.Queue()
-        
+        result_queue = ctx.Queue()
+
         processes = []
-        for i in range(workers):
-            c_start = eff_start + i * chunk_sec
-            c_end = eff_start + (i + 1) * chunk_sec if i < workers - 1 else eff_end
+        for i, (c_start, c_end) in enumerate(worker_ranges):
             task_args = {
                 "worker_id": i,
                 "video_path": video_path,
@@ -535,28 +485,30 @@ def run(args: argparse.Namespace) -> tuple[Path, Path]:
                 "replay_label": args.replay_label,
                 "replay_threshold": args.replay_threshold,
                 "replay_roi": replay_roi,
-                "timer_roi": timer_roi,
-                "score_roi": score_roi,
             }
-            p = ctx.Process(target=process_video_chunk_with_queue, args=(task_args, queue))
+            p = ctx.Process(target=process_video_chunk_with_queue, args=(task_args, result_queue))
             p.start()
             processes.append(p)
-            
+
         finished_workers = 0
         worker_progress = {i: 0 for i in range(workers)}
         worker_results = {}
-        
+        worker_error = None
+
         print(f"Processing video with {workers} workers using spawn context...", flush=True)
-        
+
         while finished_workers < workers:
             try:
-                item = queue.get(timeout=1.0)
+                item = result_queue.get(timeout=1.0)
                 worker_id, progress, payload = item
                 if progress == -1:
-                    raise RuntimeError(f"Worker {worker_id} crashed: {payload}")
+                    worker_error = RuntimeError(f"Worker {worker_id} crashed: {payload}")
+                    break
                 
                 if payload is not None:
-                    worker_results[worker_id] = payload
+                    worker_results[worker_id] = list(payload.get("rows") or [])
+                    if not labels:
+                        labels = list(payload.get("labels") or [])
                     worker_progress[worker_id] = progress
                     finished_workers += 1
                 else:
@@ -571,21 +523,26 @@ def run(args: argparse.Namespace) -> tuple[Path, Path]:
             except queue.Empty:
                 for i, p in enumerate(processes):
                     if not p.is_alive() and i not in worker_results:
-                        print(f"Worker process {i} died unexpectedly with exitcode {p.exitcode}", flush=True)
-                        finished_workers = workers
+                        worker_error = RuntimeError(f"Worker process {i} died unexpectedly with exitcode {p.exitcode}")
                         break
+                if worker_error is not None:
+                    break
                 continue
-            except Exception as e:
-                print(f"Error during progress tracking: {e}", flush=True)
-                break
-        
+
+        if worker_error is not None:
+            for p in processes:
+                if p.is_alive():
+                    p.terminate()
         for p in processes:
             p.join()
-            
+        if worker_error is not None:
+            raise worker_error
+
         for i in range(workers):
             if i in worker_results:
                 rows.extend(worker_results[i])
         rows.sort(key=lambda r: float(r["time_sec"]))
+        print(f"labels: {', '.join(labels)}")
     rows = smooth_rows(rows, args.smooth_window)
     if args.markers:
         segments = build_segments_from_markers(resolve_path(args.markers))
@@ -596,47 +553,32 @@ def run(args: argparse.Namespace) -> tuple[Path, Path]:
             live_label=args.live_label,
             min_live_sec=args.min_live_sec,
             bridge_gap_sec=args.bridge_gap_sec,
-            bridge_gap_max_sec=args.bridge_gap_max_sec,
-            timer_tolerance_sec=args.timer_tolerance_sec,
-            score_sig_threshold=args.score_sig_threshold,
         )
-        segments = validate_segments_with_demo(segments, rows, resolve_path(args.demo_rounds) if args.demo_rounds else None)
         segment_mode = "model_game_segments_v2"
+    segments = validate_segments_with_demo(
+        segments,
+        rows,
+        resolve_path(args.demo_rounds) if args.demo_rounds else None,
+    )
 
     frame_output = resolve_path(args.frame_output)
     segment_output = resolve_path(args.segment_output)
-    frame_output.parent.mkdir(parents=True, exist_ok=True)
-    segment_output.parent.mkdir(parents=True, exist_ok=True)
-    with frame_output.open("w", encoding="utf-8") as file:
-        for row in rows:
-            file.write(json.dumps(row, ensure_ascii=False) + "\n")
-    segment_output.write_text(
-        json.dumps(
-            {
-                "video": to_relative_path(resolve_path(args.video)),
-                "model": to_relative_path(resolve_path(args.model)),
-                "replay_model": to_relative_path(resolve_path(args.replay_model)) if args.replay_model else "",
-                "replay_roi": args.replay_roi,
-                "timer_roi": args.timer_roi,
-                "score_roi": args.score_roi,
-                "interval_sec": args.interval_sec,
-                "bridge_gap_max_sec": args.bridge_gap_max_sec,
-                "timer_tolerance_sec": args.timer_tolerance_sec,
-                "score_sig_threshold": args.score_sig_threshold,
-                "demo_rounds": to_relative_path(resolve_path(args.demo_rounds)) if args.demo_rounds else "",
-                "labels": labels,
-                "segment_mode": segment_mode,
-                "markers": to_relative_path(resolve_path(args.markers)) if args.markers else "",
-                "frame_count": len(rows),
-                "segment_count": len(segments),
-                "total_live_sec": round(sum(float(segment.get("duration_sec", 0.0)) for segment in segments), 3),
-                "segments": segments,
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    segment_payload = {
+        "video": to_relative_path(resolve_path(args.video)),
+        "model": to_relative_path(resolve_path(args.model)),
+        "replay_model": to_relative_path(resolve_path(args.replay_model)) if args.replay_model else "",
+        "replay_roi": args.replay_roi,
+        "interval_sec": args.interval_sec,
+        "demo_rounds": to_relative_path(resolve_path(args.demo_rounds)) if args.demo_rounds else "",
+        "labels": labels,
+        "segment_mode": segment_mode,
+        "markers": to_relative_path(resolve_path(args.markers)) if args.markers else "",
+        "frame_count": len(rows),
+        "segment_count": len(segments),
+        "total_live_sec": round(sum(float(segment.get("duration_sec", 0.0)) for segment in segments), 3),
+        "segments": segments,
+    }
+    write_outputs_atomically(frame_output, segment_output, rows, segment_payload)
     return frame_output, segment_output
 
 
@@ -648,8 +590,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--replay-model", default="", help="可选：局部 replay_marker 二分类模型")
     parser.add_argument("--replay-roi", default="", help="可选：replay 标记区域 x1,y1,x2,y2；支持 0-1 归一化或像素坐标")
     parser.add_argument("--replay-threshold", type=float, default=0.65)
-    parser.add_argument("--timer-roi", default="0.46,0.0,0.54,0.06", help="回合计时器 ROI x1,y1,x2,y2；支持归一化或像素坐标")
-    parser.add_argument("--score-roi", default="0.42,0.0,0.58,0.08", help="比分区域 ROI x1,y1,x2,y2；用于灰度签名差分")
     parser.add_argument("--frame-output", default="output/frame_type_rows.jsonl")
     parser.add_argument("--segment-output", default="output/frame_type_segments.json")
     parser.add_argument("--demo-rounds", default="", help="可选：tools/parse_demo.py 输出的 rounds.json，用于切片后校验")
@@ -663,9 +603,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--replay-label", default="replay_marker")
     parser.add_argument("--min-live-sec", type=float, default=20.0)
     parser.add_argument("--bridge-gap-sec", type=float, default=3.0)
-    parser.add_argument("--bridge-gap-max-sec", type=float, default=20.0)
-    parser.add_argument("--timer-tolerance-sec", type=float, default=3.0)
-    parser.add_argument("--score-sig-threshold", type=float, default=0.12)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--workers", type=int, default=1, help="多进程并行数量，提升处理速度")
     parser.add_argument("--progress-every", type=int, default=25, help="命令行进度输出间隔，按采样帧数计算")
@@ -710,23 +647,16 @@ class SlicerWindow:
         self.smooth_spin = self._int_spin(params_layout, 3, "平滑窗口", 5, 1, 99)
         self.min_live_spin = self._double_spin(params_layout, 4, "最短 live 秒", 20.0, 0.0, 999999.0, 1)
         self.bridge_gap_spin = self._double_spin(params_layout, 5, "合并间隔秒", 3.0, 0.0, 999999.0, 1)
-        self.bridge_gap_max_spin = self._double_spin(params_layout, 6, "timer连续最大间隔秒", 20.0, 0.0, 999999.0, 1)
         self.live_label_edit = QtWidgets.QLineEdit("game")
-        params_layout.addWidget(QtWidgets.QLabel("live 标签"), 7, 0)
-        params_layout.addWidget(self.live_label_edit, 7, 1)
+        params_layout.addWidget(QtWidgets.QLabel("live 标签"), 6, 0)
+        params_layout.addWidget(self.live_label_edit, 6, 1)
         self.device_edit = QtWidgets.QLineEdit("auto")
-        params_layout.addWidget(QtWidgets.QLabel("设备"), 8, 0)
-        params_layout.addWidget(self.device_edit, 8, 1)
+        params_layout.addWidget(QtWidgets.QLabel("设备"), 7, 0)
+        params_layout.addWidget(self.device_edit, 7, 1)
         self.replay_roi_edit = QtWidgets.QLineEdit("0,0,0.32,0.18")
-        params_layout.addWidget(QtWidgets.QLabel("replay ROI"), 9, 0)
-        params_layout.addWidget(self.replay_roi_edit, 9, 1)
-        self.timer_roi_edit = QtWidgets.QLineEdit("0.46,0.0,0.54,0.06")
-        params_layout.addWidget(QtWidgets.QLabel("timer ROI"), 10, 0)
-        params_layout.addWidget(self.timer_roi_edit, 10, 1)
-        self.score_roi_edit = QtWidgets.QLineEdit("0.42,0.0,0.58,0.08")
-        params_layout.addWidget(QtWidgets.QLabel("score ROI"), 11, 0)
-        params_layout.addWidget(self.score_roi_edit, 11, 1)
-        self.replay_threshold_spin = self._double_spin(params_layout, 12, "replay 阈值", 0.65, 0.0, 1.0, 2)
+        params_layout.addWidget(QtWidgets.QLabel("replay ROI"), 8, 0)
+        params_layout.addWidget(self.replay_roi_edit, 8, 1)
+        self.replay_threshold_spin = self._double_spin(params_layout, 9, "replay 阈值", 0.65, 0.0, 1.0, 2)
 
         actions = QtWidgets.QHBoxLayout()
         root.addLayout(actions)
@@ -826,10 +756,6 @@ class SlicerWindow:
             self.replay_roi_edit.text(),
             "--replay-threshold",
             str(self.replay_threshold_spin.value()),
-            "--timer-roi",
-            self.timer_roi_edit.text(),
-            "--score-roi",
-            self.score_roi_edit.text(),
             "--frame-output",
             self.frame_output_edit.text(),
             "--segment-output",
@@ -850,8 +776,6 @@ class SlicerWindow:
             str(self.min_live_spin.value()),
             "--bridge-gap-sec",
             str(self.bridge_gap_spin.value()),
-            "--bridge-gap-max-sec",
-            str(self.bridge_gap_max_spin.value()),
             "--device",
             self.device_edit.text(),
             "--progress-every",

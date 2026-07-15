@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -14,50 +15,62 @@ from tqdm import tqdm
 
 from core.prompt_loader import load_prompt
 from audio_service.emotion import parse_emotional_text
-from sbmachine.common import load_config, load_hype_rules, load_json_library, require_path, resolve_backend, write_json
-from sbmachine.hype_score import _dominant_scene_emotion
-from sbmachine.phase3b_prompt import _CONTAMINATION_MARKERS, _LEAK_MARKERS, _aliases_hint, _build_emotion_constraint, _demo_hint, _extract_json_obj, _extract_tail, _few_shot_hint, _load_persona, _load_player_aliases, _strip_tags
+from sbmachine.common import load_config, load_hype_rules, resolve_backend, write_json
+from sbmachine.neutral_contract import validate_neutral_manifest
+from sbmachine.emotion_policy import EmotionPolicy, normalize_commentary_emotion, weighted_intensity
+from sbmachine.phase3b_prompt import _CONTAMINATION_MARKERS, _LEAK_MARKERS, _aliases_hint, _extract_json_obj, _extract_tail, _load_persona, _load_player_aliases, _strip_tags
+from sbmachine.llm_shim import accept_api_response
 from sbmachine.schemas import EmotionSegment, SemanticData, load_match, save_match
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
+class _ValidatedStyleCommentary(str):
+    """校验通过的口播文本，附带原始响应，供最终 accept 反馈给后端。"""
+
+    def __new__(cls, value: str, raw_response: object) -> "_ValidatedStyleCommentary":
+        result = super().__new__(cls, value)
+        result.raw_response = raw_response
+        return result
+
+    def accept(self, output: str) -> None:
+        accept_api_response(self.raw_response, output=output)
 
 
-
-
-# A-1: stateless generate，不再用 /api/chat 累积历史
+# 无状态生成：不累积任何对话历史。
 def _call_style(system: str, user_prompt: str, llm_cfg: dict, gen_fn, round_no: int = 0, debug: bool = False,
                 max_tokens: int | None = None, log_ctx: dict | None = None) -> tuple[str, float]:
-    """Returns (commentary_text, felt_intensity). Uses /api/generate (stateless)."""
+    """返回 (口播文本, felt_intensity)；走 /api/generate，无状态。"""
     try:
         raw = gen_fn(user_prompt, llm_cfg, system, max_tokens=max_tokens, log_ctx=log_ctx)
     except Exception as exc:
         return f"[style error: {exc}]", 0.0
 
     data = _extract_json_obj(raw)
-    if data is not None and "commentary" in data:
-        commentary = str(data.get("commentary", ""))
-        if (not commentary.strip()
-                or any(mk in commentary for mk in _LEAK_MARKERS)
+    if data is None or set(data) != {"commentary", "felt_intensity"}:
+        commentary, felt = "[style error: unparseable]", 0.0
+    else:
+        raw_commentary = data.get("commentary")
+        commentary = raw_commentary if isinstance(raw_commentary, str) else ""
+        if (not isinstance(raw_commentary, str)
+                or not commentary.strip()
+                or any(marker in commentary for marker in _LEAK_MARKERS)
                 or commentary.lstrip().startswith("{")):
-            commentary, felt = "[style error: contract-leak]", 0.0
+            error = "contract-leak" if isinstance(raw_commentary, str) else "unparseable"
+            commentary, felt = f"[style error: {error}]", 0.0
         else:
             try:
-                felt = float(data.get("felt_intensity", 0.0) or 0.0)
+                raw_felt = data["felt_intensity"]
+                if isinstance(raw_felt, bool):
+                    raise ValueError("boolean intensity")
+                felt = float(raw_felt)
+                if not math.isfinite(felt) or not 0.0 <= felt <= 1.0:
+                    raise ValueError("intensity outside [0, 1]")
+                commentary = _ValidatedStyleCommentary(commentary, raw)
             except (TypeError, ValueError):
-                felt = 0.0
-    else:
-        # 模型输出裸口播文本（无 JSON 壳）时降级直接使用，避免丢弃有效解说
-        stripped = raw.strip()
-        if (stripped
-                and not stripped.lstrip().startswith("{")
-                and not any(mk in stripped for mk in _LEAK_MARKERS)):
-            commentary, felt = stripped, 0.0
-        else:
-            commentary, felt = "[style error: unparseable]", 0.0
+                commentary, felt = "[style error: unparseable]", 0.0
 
-    # A-5: debug dump 改存 system_prompt + user_prompt，不再存 messages_input
+    # debug 模式落盘：记录本次无状态请求与响应原文。
     if debug:
         debug_dir = _PROJECT_ROOT / "output" / "debug_phase3"
         debug_dir.mkdir(parents=True, exist_ok=True)
@@ -77,9 +90,6 @@ def _call_style(system: str, user_prompt: str, llm_cfg: dict, gen_fn, round_no: 
     return commentary, felt
 
 
-# A-3: 提取尾巴，≤80字，按句界切
-
-
 # ── main runner ──
 
 def run_phase3b(
@@ -92,37 +102,25 @@ def run_phase3b(
     dry_run: bool = False,
 ) -> dict:
     import os
-    from sbmachine.match_memory import MatchMemory
 
     config = load_config(config_path)
     debug_enabled = bool(config.get("debug", {}).get("phase3", False) or os.getenv("AI6657_DEBUG_PHASE3"))
     llm_cfg = dict(config.get("llm", {}))
     backend = resolve_backend(config, "style")
-    is_api = backend == "api"   # 仅 API 路径走风格升级，本地零改动
-    if is_api:
-        from sbmachine import llmb_api as _llmb_backend
-    else:
-        from sbmachine import llmb_local as _llmb_backend
+    if backend not in {"api", "vllm"}:
+        raise ValueError(f"unsupported style backend: {backend}; use vllm or api")
+    from sbmachine import llmb_api as _llmb_backend
     gen_fn = _llmb_backend.generate
     style_model = config.get("semantic", {}).get("style_model") or config.get("semantic", {}).get("model", "")
     if style_model:
         llm_cfg["model"] = style_model
 
-    catchphrase_path = _PROJECT_ROOT / config.get("paths", {}).get(
-        "catchphrase_library", "Prompt/json/catchphrase_library.json"
-    )
-    catchphrases = load_json_library(catchphrase_path)
-
-    demos: dict[str, list[str]] = {}
-    if is_api:
-        demos_path = _PROJECT_ROOT / config.get("paths", {}).get(
-            "commentary_demos", "Prompt/json/commentary_demos.json"
-        )
-        demos = load_json_library(demos_path)
     aliases = _load_player_aliases()
     persona = _load_persona()
 
-    neutral_data = json.loads(neutral_path.read_text(encoding="utf-8"))
+    neutral_data = validate_neutral_manifest(
+        json.loads(neutral_path.read_text(encoding="utf-8")), rounds_path,
+    )
     neutral_by_round: dict[int, dict] = {
         int(r["round_no"]): r
         for r in neutral_data.get("rounds", [])
@@ -131,55 +129,46 @@ def run_phase3b(
     match = load_match(rounds_path)
     profile = str(config.get("profile", "style"))
 
-    demo_rounds: list[dict] = []
-    try:
-        from sbmachine.common import resolve_path
-        pd = resolve_path(config.get("demo", {}).get("parsed_dir", "output/demo"))
-        if pd and (pd / "rounds.json").exists():
-            demo_rounds = json.loads((pd / "rounds.json").read_text(encoding="utf-8"))
-    except Exception:
-        pass
-
-    memory = MatchMemory.init(map_name=match.map_name, total_rounds_est=len(match.rounds))
     manifest_rounds = []
     errors: list[dict] = []
+    accepted_run_samples: list[tuple[_ValidatedStyleCommentary, str]] = []
 
     cs_rules_path = _PROJECT_ROOT / "Prompt" / "cs_rules.txt"
     cs_rules = cs_rules_path.read_text(encoding="utf-8").strip() if cs_rules_path.exists() else ""
-    # A-1: system_content 固定，不再随 scene 滚动；API 路径用人味升级版 prompt
-    style_prompt_name = "style_system_api" if is_api else "style_system"
     system_content = "\n\n".join(filter(None, [
-        load_prompt(style_prompt_name).replace("{persona_hint}", persona),
+        load_prompt("style_system").replace("{persona_hint}", persona),
         cs_rules,
-        _llmb_backend.load_style_skill(config) if is_api else "",
+        _llmb_backend.load_style_skill(config),
     ]))
 
-    # A-3: 跨 scene 跨局持久，不重置
-    last_tail: str = ""
+    emotion_policy = EmotionPolicy.from_rules(load_hype_rules())
 
     for rnd in tqdm(match.rounds, desc="Phase3b style", unit="round"):
-        global_emotion = memory.emotion_snapshot()
-
         round_data = neutral_by_round.get(rnd.round_no, {})
         scenes = round_data.get("scenes", [])
-        round_emotion = round_data.get("round_emotion", "平淡")
-        peak_hype = float(round_data.get("peak_hype", 0.0))
         avg_hype = float(round_data.get("avg_hype", 0.0))
         analyst_failed = bool(round_data.get("analyst_failed", False))
+        round_final_intensity = avg_hype
+        round_status = "ok"
+        last_tail = ""
+        accepted_samples: list[tuple[_ValidatedStyleCommentary, str]] = []
 
         if dry_run:
-            commentary, felt_intensity = f"[平述]第{rnd.round_no}局解说占位。", avg_hype
+            commentary, felt_intensity = "", 0.0
             scenes_manifest = []
+            round_status = "dry_run"
         elif analyst_failed or not scenes:
-            print(f"[phase3b] round {rnd.round_no} skipped: analyst failed or no scenes", file=sys.stderr)
-            commentary, felt_intensity = f"[平述]（第{rnd.round_no}局中性稿缺失，跳过解说）", 0.0
+            reason = "analyst_failed" if analyst_failed else "no_scenes"
+            print(f"[phase3b] round {rnd.round_no} skipped: {reason}", file=sys.stderr)
+            commentary, felt_intensity = "", 0.0
             scenes_manifest = []
+            round_status = reason
         else:
-            memory_ctx = memory.render()
 
             scene_commentaries: list[str] = []
-            scene_commentaries_meta: list[dict] = []   # 改动5: scene 级输出元数据（t_start/t_end/emotion/text）
-            felt_intensity = 0.0
+            scene_commentaries_meta: list[dict] = []
+            felt_samples: list[tuple[float, float]] = []
+            final_intensity_samples: list[tuple[float, float]] = []
 
             for scene in scenes:
                 scene_neutral = scene.get("neutral", "")
@@ -191,32 +180,17 @@ def run_phase3b(
                 t_start = float(scene.get("t_start", rnd.start_sec))
                 t_end = float(scene.get("t_end", rnd.end_sec))
                 duration = max(1.0, t_end - t_start)
-
-                scene_emotion = _dominant_scene_emotion(scene_hype)
-                constraint = _build_emotion_constraint(scene_emotion, scene_hype, global_emotion)
-                few_shot = _few_shot_hint(catchphrases, scene_hype)
                 alias_hint = _aliases_hint(scene_neutral, aliases)
-                demo_hint = _demo_hint(demos, scene_hype) if is_api else ""
 
-                # API 路径不把绝对秒数喂给模型（防复述"867秒"），只留时长+字数预算
-                if is_api:
-                    scene_info = (
-                        f"（约{duration:.0f}秒，字数预算约{char_budget}字）"
-                        + (f"\n阶段：{scene_name}" if scene_name and scene_name != "full" else "")
-                    )
-                else:
-                    scene_info = (
-                        f"时间：{t_start:.1f}~{t_end:.1f}秒（{duration:.0f}秒，字数预算约{char_budget}字）"
-                        + (f"\n阶段：{scene_name}" if scene_name and scene_name != "full" else "")
-                    )
+                # 任何后端都不向风格模型暴露绝对时间，只给时长和字数预算。
+                scene_info = (
+                    f"（约{duration:.0f}秒，字数预算约{char_budget}字）"
+                    + (f"\n阶段：{scene_name}" if scene_name and scene_name != "full" else "")
+                )
 
-                # A-4: user_prompt 替代 chat_messages；A-3: 注入 last_tail
+                # 只保留上一句的句尾，用于衔接语气，不累积完整历史。
                 user_prompt = "\n\n".join(filter(None, [
-                    f"【当前对局状态】\n{memory_ctx}",
                     f"【上一句解说】\n{last_tail}" if last_tail else "",
-                    f"【情绪约束】\n{constraint}" if constraint else "",
-                    f"【口癖参考】\n{few_shot}" if few_shot else "",
-                    f"【风格范例】\n{demo_hint}" if demo_hint else "",
                     f"【选手绰号】\n{alias_hint}" if alias_hint else "",
                     f"【场景信息】\n{scene_info}",
                     f"【中性稿】\n{scene_neutral}",
@@ -226,7 +200,11 @@ def run_phase3b(
                 # 输出含 JSON 包壳 + commentary 正文；中文 ~1.6 tok/字，留壳+余量。
                 scene_max_tokens = max(160, min(768, int(char_budget * 2.2) + 80))
 
-                log_ctx = {"round": f"round{rnd.round_no}", "scene": scene_name}
+                log_ctx = {
+                    "run_id": neutral_data["run_id"],
+                    "round": f"round{rnd.round_no}",
+                    "scene": scene_name,
+                }
                 scene_commentary, scene_felt = _call_style(
                     system_content,
                     user_prompt,
@@ -241,22 +219,50 @@ def run_phase3b(
                 if not scene_commentary.startswith("[style error:"):
                     prev = scene_commentaries[-1] if scene_commentaries else ""
                     if scene_commentary and _strip_tags(scene_commentary) == _strip_tags(prev):
-                        # R-3: 相邻去重保留，无 transcript 无需 pop
+                        # 抑制与上一句完全相同的相邻复读。
                         print(f"[phase3b] round {rnd.round_no} scene '{scene_name}' adjacent-repeat, skipping", file=sys.stderr)
                     else:
-                        scene_commentaries.append(scene_commentary)
-                        felt_intensity = scene_felt
-                        # 污染检测：含 instruction 标记则置空，阻断毒化传播
-                        if any(m in scene_commentary for m in _CONTAMINATION_MARKERS):
+                        scream_eligible = bool(scene.get("scream_eligible", False))
+                        decision = emotion_policy.decide(
+                            hard_intensity=scene_hype,
+                            llmb_intensity=scene_felt,
+                            scream_eligible=scream_eligible,
+                        )
+                        validated_commentary = scene_commentary
+                        scene_commentary = normalize_commentary_emotion(scene_commentary, decision.label)
+                        if (
+                            not _strip_tags(scene_commentary)
+                            or any(marker in scene_commentary for marker in _CONTAMINATION_MARKERS)
+                        ):
+                            print(f"[phase3b] round {rnd.round_no} scene '{scene_name}' contaminated, skipping", file=sys.stderr)
+                            errors.append({
+                                "round": f"round{rnd.round_no}",
+                                "round_no": rnd.round_no,
+                                "scene": scene_name,
+                                "error": "[style error: contaminated]",
+                                "ts": datetime.datetime.now().isoformat(timespec="seconds"),
+                            })
                             last_tail = ""
-                        else:
-                            last_tail = _extract_tail(scene_commentary)  # A-3
+                            continue
+                        if isinstance(validated_commentary, _ValidatedStyleCommentary):
+                            accepted_samples.append((validated_commentary, json.dumps({
+                                "commentary": scene_commentary,
+                                "felt_intensity": scene_felt,
+                            }, ensure_ascii=False, separators=(",", ":"))))
+                        scene_commentaries.append(scene_commentary)
+                        felt_samples.append((scene_felt, duration))
+                        final_intensity_samples.append((decision.score, duration))
+                        last_tail = _extract_tail(scene_commentary)
                         # 记录 scene 级输出（用于 manifest scenes 字段）
                         scene_commentaries_meta.append({
                             "t_start": t_start,
-                            "t_end":   t_end,
-                            "emotion": scene_emotion,
-                            "text":    _strip_tags(scene_commentary),
+                            "t_end": t_end,
+                            "emotion": decision.label,
+                            "emotion_score": decision.score,
+                            "hard_intensity": round(scene_hype, 3),
+                            "llmb_intensity": round(scene_felt, 3),
+                            "scream_eligible": scream_eligible,
+                            "text": _strip_tags(scene_commentary),
                         })
                 else:
                     print(f"[phase3b] round {rnd.round_no} scene '{scene_name}' style error, skipping", file=sys.stderr)
@@ -268,16 +274,17 @@ def run_phase3b(
                         "ts": datetime.datetime.now().isoformat(timespec="seconds"),
                     })
 
-            commentary = "".join(scene_commentaries) if scene_commentaries else f"[平述]（第{rnd.round_no}局所有场景解说失败）"
-            scenes_manifest = scene_commentaries_meta  # 改动5: 仅非静默场景有产出
+            if scene_commentaries:
+                commentary = "".join(scene_commentaries)
+                round_status = "ok"
+            else:
+                commentary = ""
+                has_neutral_input = any(str(scene.get("neutral") or "").strip() for scene in scenes)
+                round_status = "style_failed" if has_neutral_input else "silent"
+            felt_intensity = weighted_intensity(felt_samples)
+            round_final_intensity = weighted_intensity(final_intensity_samples)
+            scenes_manifest = scene_commentaries_meta
 
-        if felt_intensity > 0.0:
-            felt_clamp = float(load_hype_rules().get("felt_intensity_clamp", 0.2))
-            delta = max(-felt_clamp, min(felt_clamp, felt_intensity - avg_hype))
-            effective_hype = max(0.0, min(1.0, avg_hype + delta))
-        else:
-            effective_hype = avg_hype
-        memory.update(rnd, demo_rounds, round_hype=effective_hype)
 
         parsed = parse_emotional_text(commentary)
         rnd.phase3_semantic = SemanticData(
@@ -291,11 +298,15 @@ def run_phase3b(
             "start_sec":       rnd.start_sec,
             "end_sec":         rnd.end_sec,
             "commentary_text": commentary,
+            "status":          round_status,
             "hype_avg":        round(avg_hype, 3),
             "felt_intensity":  round(felt_intensity, 3),
+            "final_intensity": round(round_final_intensity, 3),
             "emotion_segments": [seg.__dict__ for seg in rnd.phase3_semantic.emotion_segments],
-            "scenes":          scenes_manifest,  # 改动5: scene 级时间戳+情绪+口播文本（纯增量）
+            "scenes":          scenes_manifest,
         })
+        if round_status == "ok":
+            accepted_run_samples.extend(accepted_samples)
 
     if errors:
         err_path = _PROJECT_ROOT / "logs" / "error.json"
@@ -311,6 +322,10 @@ def run_phase3b(
         existing.extend(errors)
         err_path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    # commentary 只承载解说产物；phase2 视觉时间线（YOLO 框、DEM 投影）的权威副本在
+    # rounds_with_yolo.json，此处不透传，防止产物膨胀。phase4 与发布契约均不读 _phase2_yolo。
+    for rnd in match.rounds:
+        rnd.phase2_yolo = None
     save_match(output_rounds_path, match)
     manifest = {
         "video_path":    match.video_path,
@@ -320,4 +335,6 @@ def run_phase3b(
         "rounds":        manifest_rounds,
     }
     write_json(commentary_path, manifest)
+    for response, output in accepted_run_samples:
+        response.accept(output)
     return manifest

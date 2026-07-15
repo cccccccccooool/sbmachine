@@ -1,43 +1,27 @@
 llm:
-  backend: api              #ollama/api
-  ollama_url: http://127.0.0.1:11434/api/generate
+  backend: vllm              # 通用 LLM 后端：vllm 或 api。
+  base_url: http://127.0.0.1:8000/v1  # OpenAI 兼容聊天接口地址。
 
-  temperature: 0.75
-  timeout_sec: 300
-  num_ctx: 16384            # 输出已封顶，无需 32k；缩 KV 池更快更省显存
-  enable_thinking: false    # qwen3 关思考：ollama 走 options.think；api 走 system 尾 /no_think
-  repeat_penalty: 1.15      # ollama 防复读
-  repeat_last_n: 256        # ollama 防复读回看窗
-  frequency_penalty: 0.3    # api 防复读
+  temperature: 0.75  # 通用采样温度；越高越发散。
+  timeout_sec: 300  # 单次 LLM 请求超时（秒）。
+  num_ctx: 16384  # 上下文窗口上限（token）。
+  enable_thinking: false  # 是否请求模型输出思考过程；正式稿通常关闭。
+  frequency_penalty: 0.3  # 重复 token 惩罚。
 
 semantic:
-  # analyst/style 均未设置时的统一回退值
-  model: qwen3:8b
-  analyst_backend: api      # llma 后端：ollama / api；缺省回退 llm.backend
-  style_backend:   api      # llmb 后端：ollama / api；缺省回退 llm.backend
-  # 双模型模式（phases.dual_model: true）
-  # analyst_model: 分析 8B，只管事实准确，中性白描
-  # style_model:   风格 8B，只管像 6657，加情绪标签
-  # 训练好后在下面填入各自的 ollama model 名称
-  analyst_model: qwen3:8b   # TODO: 替换为训练好的分析 adapter
-  style_model:   qwen3:8b   # TODO: 替换为训练好的风格 adapter
-  # phase3a 并发局数。云端 API 模式下不受本地显存限制，可以直接拉高（视你的 API 账号并发限额而定）。
-  analyst_concurrent_rounds: 5
-  # 分析模型输出上限（JSON scenes 数组；忙局 scene 多需留足，过低会截断成 analyst_failed）
-  analyst_max_tokens: 3072
-  # 长回合策略：payload 超 token 预算时
-  #   false(默认)=降采样关键帧到下限，单次调用（有损快）
-  #   true       =切多段逐段分析后合并（无损，K次调用）
-  segment_long_rounds: true
-  segment_overlap_frames: 2   # 段间重叠帧（仅喂上下文，输出按归属窗去重）
-  window_max_sec: 10          # 静默段兜底切窗间隔（秒）
-  window_min_sec: 3           # 小于此值的窗并入相邻
+  model: qwen3  # 兼容旧调用的默认语义模型名。
+  analyst_backend: vllm  # Phase3a 分析后端：vllm 或 api。
+  style_backend: vllm  # Phase3b 风格化后端：vllm 或 api。
+  analyst_model: qwen3  # Phase3a 使用的 served-model 名称。
+  style_model: qwen3  # Phase3b 使用的 served-model/LoRA 名称。
+  analyst_concurrent_rounds: 1  # 同时处理的回合数；受显存和服务吞吐限制。
+  analyst_max_tokens: 256  # Phase3a 单窗口最大输出 token 数。
+  analyst_temperature: 0.3  # Phase3a 采样温度。
+  analyst_repeat_penalty: 1.3  # Phase3a 重复内容惩罚。
+  analyst_top_p: 0.9  # Phase3a nucleus sampling 截断值。
 
-# 口癖库路径（phase3b 注入 few-shot）
+  window_max_sec: 10  # Phase3 语义窗口最大长度（秒）。
+  window_min_sec: 3  # Phase3 语义窗口最小长度（秒）。
+
 paths:
-  catchphrase_library: Prompt/json/catchphrase_library.json
-  commentary_demos:    Prompt/json/commentary_demos.json   # 真实解说稿 few-shot（仅 API 路径）
-  style_skill:         Prompt/skill/style_skill.md
-  callouts_zh:         database/callouts_zh.json
-  terms_zh:            database/terms_zh.json
-  lineups_dir:         database/lineups
+  style_skill: Prompt/skill/style_skill.md  # Phase3b 风格技能文件。

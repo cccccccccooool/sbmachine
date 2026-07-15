@@ -1,11 +1,8 @@
-"""外部推理服务生命周期管理（VLM / Ollama / SoVITS）。"""
+"""外部推理服务生命周期管理（VLM / vLLM / SoVITS）。"""
 from __future__ import annotations
 
 import subprocess
-import sys
 import time
-from pathlib import Path
-from urllib.parse import urlparse
 
 import requests
 
@@ -17,75 +14,100 @@ class ServiceManager:
         self._log_fhs: dict[str, object] = {}
         self._svc_cfg: dict = config.get("runtime", {}).get("services", {})
 
-    # ── health URL helpers（从现有 config 派生，无硬编码） ──
-
-    def _health_url(self, name: str) -> str:
-        if name == "vlm":
-            ep = self.config.get("vision", {}).get("vlm", {}).get(
-                "endpoint", "http://127.0.0.1:23333/v1/chat/completions"
-            )
-            p = urlparse(ep)
-            return f"{p.scheme}://{p.netloc}/health"
-
-        if name == "ollama":
-            base = self.config.get("llm", {}).get(
-                "ollama_url", "http://127.0.0.1:11434/api/generate"
-            )
-            p = urlparse(base)
-            return f"{p.scheme}://{p.netloc}/"
-
-        if name == "sovits":
-            host, port = "127.0.0.1", 9880
-            try:
-                import yaml
-                from sbmachine.common import resolve_path
-                tts_rel = self.config.get("tts", {}).get(
-                    "config", "audio_service/gpt_sovits_runtime.yaml"
-                )
-                p = resolve_path(tts_rel)
-                if p and p.exists():
-                    rt = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-                    host = rt.get("api", {}).get("host", host)
-                    port = int(rt.get("api", {}).get("port", port))
-            except Exception:
-                pass
-            return f"http://{host}:{port}/"
-
-        raise ValueError(f"Unknown service name: {name}")
-
-    # ── Ollama model name（从 config/llm.yaml semantic.model 读取） ──
-
-    def _ollama_models(self) -> list[str]:
-        svc_override = self.config.get("runtime", {}).get("services", {}).get("ollama", {}).get("model", "")
-        if svc_override:
-            return [str(svc_override)]
-        phases = self.config.get("phases", {}) if isinstance(self.config.get("phases", {}), dict) else {}
-        semantic = self.config.get("semantic", {}) if isinstance(self.config.get("semantic", {}), dict) else {}
-        default_model = semantic.get("model", "qwen3:8b")
-        p3a = bool(phases.get("phase3a_semantic", phases.get("phase3_semantic", True)))
-        p3b = bool(phases.get("phase3b_semantic", phases.get("phase3_semantic", True)))
-        from sbmachine.common import resolve_backend
-        models = []
-        if p3a and resolve_backend(self.config, "analyst") != "api":
-            models.append(str(semantic.get("analyst_model") or default_model))
-        if p3b and resolve_backend(self.config, "style") != "api":
-            models.append(str(semantic.get("style_model") or default_model))
-        return list(dict.fromkeys(models or [str(default_model)]))
 
     # ── 健康轮询 ──
 
     @staticmethod
-    def _poll_health(url: str, timeout_sec: int, interval: float = 2.0) -> bool:
+    def _matches_identity(response: requests.Response, identity: dict) -> bool:
+        if response.status_code != 200:
+            return False
+        try:
+            payload = response.json()
+        except (requests.JSONDecodeError, ValueError):
+            return False
+        service = identity.get("service")
+        if service == "vlm":
+            return isinstance(payload, dict) and payload.get("service") == "ai-6657-vlm" and payload.get("status") == "ok"
+        if service == "vllm":
+            models = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(payload, dict) or payload.get("object") != "list" or not isinstance(models, list):
+                return False
+            ids = {
+                str(item.get("id"))
+                for item in models
+                if isinstance(item, dict) and item.get("id")
+            }
+            expected = identity.get("models")
+            if isinstance(expected, list):
+                expected_models = {str(model) for model in expected if model}
+            else:
+                expected_model = str(identity.get("model") or "")
+                expected_models = {expected_model} if expected_model else set()
+            return bool(ids) and expected_models.issubset(ids)
+        if service == "sovits":
+            paths = payload.get("paths") if isinstance(payload, dict) else None
+            return isinstance(paths, dict) and "/tts" in paths
+        return False
+
+    @staticmethod
+    def _poll_health(
+        url: str,
+        timeout_sec: int,
+        interval: float = 2.0,
+        identity: dict | None = None,
+    ) -> bool:
         deadline = time.monotonic() + timeout_sec
         while time.monotonic() < deadline:
             try:
-                r = requests.get(url, timeout=3)
-                if r.status_code < 500:
+                response = requests.get(url, timeout=3)
+                if identity is not None and ServiceManager._matches_identity(response, identity):
                     return True
-            except Exception:
+            except requests.RequestException:
                 pass
             time.sleep(interval)
         return False
+
+    # ── 健康检查 URL 推导 ──
+
+    def _health_url(self, name: str) -> str:
+        """返回给定服务名的健康检查 URL。"""
+        if name == "vllm":
+            base = self.config.get("llm", {}).get(
+                "base_url", "http://127.0.0.1:8000/v1"
+            )
+            return f"{str(base).rstrip('/')}/models"
+
+        if name == "vlm":
+            return "http://127.0.0.1:23333/health"
+
+        if name == "sovits":
+            return "http://127.0.0.1:9880/openapi.json"
+
+        raise ValueError(f"unknown service identity: {name}")
+
+    def _health_identity(self, name: str) -> dict:
+        if name == "vllm":
+            from sbmachine.common import resolve_backend
+
+            semantic = self.config.get("semantic", {}) if isinstance(self.config.get("semantic", {}), dict) else {}
+            llm = self.config.get("llm", {}) if isinstance(self.config.get("llm", {}), dict) else {}
+            phases = self.config.get("phases", {}) if isinstance(self.config.get("phases", {}), dict) else {}
+            legacy_active = bool(phases.get("phase3_semantic", True))
+            active_roles = (
+                ("analyst", bool(phases.get("phase3a_semantic", legacy_active))),
+                ("style", bool(phases.get("phase3b_semantic", legacy_active))),
+            )
+            models: list[str] = []
+            for role, active in active_roles:
+                if not active or resolve_backend(self.config, role) != "vllm":
+                    continue
+                model = str(semantic.get(f"{role}_model") or semantic.get("model") or llm.get("model") or "")
+                if model and model not in models:
+                    models.append(model)
+            return {"service": "vllm", "models": models}
+        if name in {"vlm", "sovits"}:
+            return {"service": name}
+        raise ValueError(f"unknown service identity: {name}")
 
     # ── 启动 ──
 
@@ -106,7 +128,8 @@ class ServiceManager:
 
         # 若服务已在运行（用户手动启动过），直接 health 确认即可
         health_url = self._health_url(name)
-        already_up = self._poll_health(health_url, timeout_sec=3, interval=1.0)
+        identity = self._health_identity(name)
+        already_up = self._poll_health(health_url, timeout_sec=3, interval=1.0, identity=identity)
         if already_up:
             print(f"[services] {name} already up (skipping spawn)", flush=True)
             # 记为 None 标记"已就绪但非我们启动"，stop 时不 kill
@@ -125,7 +148,7 @@ class ServiceManager:
                 stderr=subprocess.STDOUT,
             )
             self._procs[name] = proc
-            if not self._poll_health(health_url, timeout):
+            if not self._poll_health(health_url, timeout, identity=identity):
                 proc.kill()
                 try:
                     proc.wait(timeout=5)
@@ -141,11 +164,6 @@ class ServiceManager:
 
         print(f"[services] {name} healthy", flush=True)
 
-        # Ollama 额外确保模型已拉取
-        if name == "ollama":
-            for model in self._ollama_models():
-                print(f"[services] ollama pull {model}", flush=True)
-                subprocess.run(["ollama", "pull", model], check=True)
 
     # ── 停止 ──
 

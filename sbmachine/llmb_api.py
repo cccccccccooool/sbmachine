@@ -1,4 +1,4 @@
-"""Phase 3b OpenAI-compatible API backend."""
+"""Phase 3b 的 OpenAI 兼容 API 后端。"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -8,18 +8,20 @@ from sbmachine.llm_shim import _execute_openai_chat
 
 
 def _ctx_hint(log_ctx: dict | None) -> str:
+    """把日志上下文里的 round/scene 拼成一段可读的进度提示。"""
     if not log_ctx:
         return ""
-    r = log_ctx.get("round", "")
-    s = log_ctx.get("scene", "")
-    if r and s:
-        return f" [{r} - {s}]"
-    if r:
-        return f" [{r}]"
+    round_label = log_ctx.get("round", "")
+    scene_label = log_ctx.get("scene", "")
+    if round_label and scene_label:
+        return f" [{round_label} - {scene_label}]"
+    if round_label:
+        return f" [{round_label}]"
     return ""
 
 
 def load_style_skill(config: dict) -> str:
+    """从配置里读取解说风格 skill 文件内容，缺失时返回空串。"""
     skill_path = (config.get("paths", {}) or {}).get("style_skill")
     path = resolve_path(skill_path, base=PROJECT_ROOT)
     if path is None or not Path(path).exists():
@@ -34,6 +36,7 @@ def generate(
     max_tokens: int | None = None,
     log_ctx: dict | None = None,
 ) -> str:
+    """向 Phase 3b 的 OpenAI 兼容后端发起一次生成请求。"""
     cap = _output_cap(llm_cfg, max_tokens)
     timeout = int(llm_cfg.get("timeout_sec", 120))
     print(f"  >> [LLM API] 正在请求 api 后端{_ctx_hint(log_ctx)}... (timeout: {timeout}s)", flush=True)

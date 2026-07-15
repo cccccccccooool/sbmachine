@@ -1,4 +1,4 @@
-"""第二阶段（YOLO UI 路由门槛）。利用 YOLO 模型检测画面中的 UI 区域，并将各个区域坐标分发给 OCR、VLM 遮罩等不同感知模块。"""
+"""第二阶段 YOLO UI 路由：检测 HUD 区域并将坐标交给 OCR。"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -10,9 +10,7 @@ from vision_service.region_crops import region_type, screen_side_for_label
 
 @dataclass
 class GateDecision:
-    should_describe: bool
     reason: str
-    hint: str
     tags: list[str] = field(default_factory=list)
     confidence: float = 0.0
     background: dict = field(default_factory=dict)
@@ -23,7 +21,7 @@ class YoloGate:
 
     YOLO 仅返回坐标,不读取玩家数值信息、计时器文本、C4 状态或击杀栏内容。
     计时器和第一人称(POV)标记坐标是 OCR 的目标;
-    其他所有 UI 坐标仅在发送给 VLM 之前用于做画面遮罩处理。
+    OCR/路由读取坐标，画面内容本身不作为游戏事实源。
     """
 
     def __init__(self, config: dict) -> None:
@@ -37,10 +35,8 @@ class YoloGate:
             from sbmachine.common import PROJECT_ROOT
             resolved_path = PROJECT_ROOT / resolved_path
 
-        if not resolved_path.exists():
-            container_fallback = Path("/opt/models_workspace/yolo_cs2.pt")
-            if container_fallback.exists():
-                resolved_path = container_fallback
+        if not resolved_path.is_file():
+            raise FileNotFoundError(f"vision.yolo.model_path does not exist: {resolved_path}")
 
         self.model_path = str(resolved_path)
         try:
@@ -48,9 +44,8 @@ class YoloGate:
         except ImportError as exc:
             raise RuntimeError("Missing ultralytics. Install it before running Phase 2 UI YOLO.") from exc
         self.model = YOLO(self.model_path)
-        self.model.to("cpu")  # force CPU to avoid competing with VLM for GPU VRAM
+        self.model.to("cpu")
         self.conf_threshold = float(self.config.get("conf_threshold", 0.35))
-        self.prompt_labels = self.config.get("prompt_labels", {})
         self.skip_labels = set(self.config.get("skip_labels", []))
         self.pov_name_labels = {"pov_name", "pov_name_area", "pov_player_bar", "pov_marker_bar"}
         self.ocr_labels = {"timer", "timer_area", "round_timer"}
@@ -59,7 +54,7 @@ class YoloGate:
 
     def decide(self, frame: Any) -> GateDecision:
         if self._is_near_white(frame):
-            return GateDecision(False, "flash_or_white_frame", "skip near-white frame", ["flash"], 1.0)
+            return GateDecision("flash_or_white_frame", ["flash"], 1.0)
 
         result = self.model(frame, verbose=False, conf=self.conf_threshold)[0]
         names = getattr(result, "names", {}) or {}
@@ -80,13 +75,11 @@ class YoloGate:
         labels = {tag.split("(", 1)[0] for tag in tags}
         background = self.structure_background(detections)
         if labels & self.skip_labels:
-            return GateDecision(False, "ui_yolo_skip_label", "skip label from UI YOLO", tags, confidence, background)
+            return GateDecision("ui_yolo_skip_label", tags, confidence, background)
         if not tags:
-            return GateDecision(False, "no_ui_yolo_signal", "no UI YOLO region detected", [], 0.0, background)
+            return GateDecision("no_ui_yolo_signal", [], 0.0, background)
 
-        hints = [self.prompt_labels.get(label, "") for label in sorted(labels)]
-        hint = " / ".join(item for item in hints if item) or "YOLO located UI regions; route crops to local/OCR/C4 readers. Global VLM sees UI-masked scene only."
-        return GateDecision(True, "ui_yolo_signal", hint, tags, confidence, background)
+        return GateDecision("ui_yolo_signal", tags, confidence, background)
 
     def _is_near_white(self, frame: Any) -> bool:
         threshold = float(self.config.get("white_frame_mean_threshold", 245))
@@ -141,10 +134,10 @@ class YoloGate:
             "loose_detections": loose,
             "role_resolution": {
                 "status": "region_router_only",
-                "rule": "YOLO only returns coordinates. timer and pov_player_bar go to OCR; all other UI boxes except timer/c4 are masked before VLM.",
+                "rule": "YOLO only returns coordinates; OCR and deterministic routing consume them.",
             },
             "reserved_future": {
-                "c4": "C4 visual boxes are retained as coordinates but are not masked and not used for plant detection."
+                "c4": "C4 visual boxes are retained for routing and never used as plant truth."
             },
         }
 

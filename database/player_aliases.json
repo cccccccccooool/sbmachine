@@ -1,0 +1,45 @@
+{
+  "_comment": "选手绰号/昵称 RAG 库。key=demo 中的标准名，aliases=主播可能叫的绰号。Phase3 prompt 注入用。",
+  "_usage": "tools/data_clean/label_commentary_pairs.py 审核时可追加。phase3b 在 prompt 里列出绰号供模型参考。",
+
+  "s1mple": {
+    "aliases": ["简单", "s1", "Simple"],
+    "desc": "NaVi 传奇选手，世界顶级AWP手"
+  },
+  "donk": {
+    "aliases": ["驴", "小驴"],
+    "desc": "Spirit战队新星，超强步枪手"
+  },
+  "NiKo": {
+    "aliases": ["尼克", "Niko"],
+    "desc": "G2传奇选手，顶级步枪手"
+  },
+  "ZywOo": {
+    "aliases": ["小兔", "ZW"],
+    "desc": "Vitality王牌，历史级AWP手"
+  },
+  "sh1ro": {
+    "aliases": ["白虎", "shiro"],
+    "desc": "Cloud9/Spirit AWP手"
+  },
+  "electronic": {
+    "aliases": ["电子", "e哥"],
+    "desc": "NaVi/老队员"
+  },
+  "b1t": {
+    "aliases": ["bit", "小b"],
+    "desc": "NaVi步枪手"
+  },
+  "chopper": {
+    "aliases": ["斩波"],
+    "desc": "Spirit IGL"
+  },
+  "magixx": {
+    "aliases": ["魔术师"],
+    "desc": "NaVi 入组新人"
+  },
+  "w0nderful": {
+    "aliases": ["w哥", "神奇"],
+    "desc": "NaVi AWP手"
+  }
+}

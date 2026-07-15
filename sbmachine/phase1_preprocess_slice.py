@@ -94,6 +94,10 @@ def write_round_list(path: Path, match: MatchPackage) -> Path:
                 "score_after": {"ct": item.score_after.ct, "t": item.score_after.t},
                 "segment_video": item.segment_video,
                 "source_reason": item.source_reason,
+                "demo_round_hint": item.demo_round_hint,
+                "align_offset": item.align_offset,
+                "align_method": item.align_method,
+                "align_confidence": item.align_confidence,
             }
             for item in match.rounds
         ],

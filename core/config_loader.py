@@ -9,10 +9,96 @@
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
+from typing import Any
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_CONFIG_DIR = _PROJECT_ROOT / "config"
+
+
+class ConfigError(ValueError):
+    """当彼此独立的配置文件对同一键给出冲突取值时抛出。"""
+
+
+def _record_origins(value: Any, path: tuple[str, ...], source: str, origins: dict[tuple[str, ...], str]) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            _record_origins(child, (*path, str(key)), source, origins)
+    else:
+        origins[path] = source
+
+
+def _merge_config(
+    target: dict,
+    incoming: dict,
+    *,
+    source: str,
+    origins: dict[tuple[str, ...], str],
+    path: tuple[str, ...] = (),
+) -> None:
+    for key, value in incoming.items():
+        key_path = (*path, str(key))
+        if key not in target:
+            target[key] = deepcopy(value)
+            _record_origins(value, key_path, source, origins)
+            continue
+
+        current = target[key]
+        if isinstance(current, dict) and isinstance(value, dict):
+            _merge_config(current, value, source=source, origins=origins, path=key_path)
+            continue
+        if current == value:
+            continue
+
+        previous = origins.get(key_path, "an earlier config file")
+        dotted = ".".join(key_path)
+        raise ConfigError(
+            f"config conflict at '{dotted}': {previous} defines {current!r}, "
+            f"but {source} defines {value!r}"
+        )
+
+
+def _load_yaml(path: Path) -> dict:
+    import yaml
+
+    try:
+        with path.open(encoding="utf-8") as file:
+            data = yaml.safe_load(file) or {}
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"invalid YAML in {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ConfigError(f"config root must be a mapping: {path}")
+    return data
+
+
+def _resolve_path(value: Any) -> Path | None:
+    if value is None or value == "":
+        return None
+    path = Path(str(value))
+    return path.resolve() if path.is_absolute() else (_PROJECT_ROOT / path).resolve()
+
+
+def _normalize_demo_path(config: dict) -> None:
+    paths = config.setdefault("paths", {})
+    demo = config.setdefault("demo", {})
+    if not isinstance(paths, dict) or not isinstance(demo, dict):
+        raise ConfigError("config sections 'paths' and 'demo' must be mappings")
+
+    output_value = paths.get("demo_output_dir")
+    parsed_value = demo.get("parsed_dir")
+    output_path = _resolve_path(output_value)
+    parsed_path = _resolve_path(parsed_value)
+    if output_path is not None and parsed_path is not None and output_path != parsed_path:
+        raise ConfigError(
+            "demo path conflict: paths.demo_output_dir "
+            f"({output_value!r}) != demo.parsed_dir ({parsed_value!r})"
+        )
+
+    canonical = output_value if output_path is not None else parsed_value
+    if canonical is not None:
+        paths["demo_output_dir"] = canonical
+        demo["parsed_dir"] = canonical
 
 
 def load_config(path_or_dir=None) -> dict:
@@ -30,23 +116,24 @@ def load_config(path_or_dir=None) -> dict:
     dict
         合并后的配置字典，键为各 yaml 顶层段名（如 vision/llm/tts 等）。
     """
-    import yaml
+    config_path = _DEFAULT_CONFIG_DIR if path_or_dir is None else Path(path_or_dir)
 
-    p = _DEFAULT_CONFIG_DIR if path_or_dir is None else Path(path_or_dir)
+    if not config_path.exists():
+        raise ConfigError(f"config path does not exist: {config_path}")
 
-    if p.is_dir():
-        import warnings
+    if config_path.is_dir():
         merged: dict = {}
-        for yaml_file in sorted(p.glob("*.yaml")):
-            with yaml_file.open(encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
-            for key in data:
-                if key in merged:
-                    warnings.warn(f"config key '{key}' overridden by {yaml_file.name}", stacklevel=2)
-            merged.update(data)
+        origins: dict[tuple[str, ...], str] = {}
+        for yaml_file in sorted(config_path.glob("*.yaml")):
+            data = _load_yaml(yaml_file)
+            # train.yaml 直接加载时保留其文件内的原始 schema；而目录整体加载时
+            # 需把它包进 train 命名空间隔离，避免 train.profile 覆盖顶层 profile。
+            if yaml_file.name == "train.yaml":
+                data = {"train": data}
+            _merge_config(merged, data, source=yaml_file.name, origins=origins)
+        _normalize_demo_path(merged)
         return merged
 
-    if not p.exists():
-        return {}
-    with p.open(encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+    config = _load_yaml(config_path)
+    _normalize_demo_path(config)
+    return config

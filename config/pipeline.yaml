@@ -1,70 +1,58 @@
-profile: lite
+profile: lite  # 当前运行/训练档位标识；运行时主要用于记录和选择默认策略。
 
-# 容器拓扑开关：无论哪种模式，run.py 都全程管理生命周期。
-#   manage_services: true  → 单容器：本容器内逐阶段 spawn 服务进程（vlm/ollama/sovits），显存错峰隔离。
-#   manage_services: false → 多容器：run.py 自己 docker compose up 三个后端容器，跑完 down（默认）。
 runtime:
-  manage_services: false      # true=单容器(容器内多进程) / false=多容器(docker compose 三容器)
-  compose_file: docker-compose.yml  # 多容器模式用的 compose 文件（manage_services=false 时生效）
-  one_model_at_a_time: true   # 单卡错峰：每段开始前启服务，结束后停服务（manage_services=true 时生效）
-  use_gpu_guard: true         # 霸占显存开关：true -> 每阶段开始前自动临时释放 gpu_guard，结束后恢复霸占
+  manage_services: true  # 是否由编排器自动启动/停止本地或 Compose 服务。
+  compose_file: docker-compose.yml  # manage_services 使用的 Compose 文件。
+  one_model_at_a_time: true  # 是否串行占用语义和 TTS 模型显存。
+  use_gpu_guard: false  # 阶段切换时是否调用 gpu_guard 释放/恢复显存。
 
   services:
-    vlm:
-      enabled: true
-      # 启动命令（相对项目根执行）
-      start: "python tools/simple_vlm_server.py"
-      startup_timeout_sec: 90
-      # health_url 自动从 config/vision.yaml vision.vlm.endpoint 派生，勿重复填
-    ollama:
-      enabled: true
-      start: "ollama serve"
-      startup_timeout_sec: 30
-      # model 自动从 config/llm.yaml semantic.model 读取
-      # health_url 自动从 config/llm.yaml llm.ollama_url 派生
+    vllm:
+      enabled: true  # 语义 vLLM 服务是否纳入服务管理。
+      start: "bash docker/talk_entrypoint.sh"  # vLLM 服务启动命令。
+      startup_timeout_sec: 180  # vLLM 服务就绪等待上限（秒）。
     sovits:
-      enabled: true
-      start: "bash -c 'cd /opt/GPT-SoVITS && python api_v2.py -a 0.0.0.0 -p 9880'"
-      startup_timeout_sec: 90
-      # host/port 自动从 audio_service/gpt_sovits_runtime.yaml api.host/port 读取
+      enabled: true  # GPT-SoVITS 服务是否纳入服务管理。
+      start: "bash -c 'cd /opt/GPT-SoVITS && python api_v2.py -a 0.0.0.0 -p 9880'"  # TTS 启动命令。
+      startup_timeout_sec: 90  # TTS 服务就绪等待上限（秒）。
 
-# 阶段开关：统一入口 run.py 按此依次执行，全部 config 驱动。
 phases:
-  demo_parse: false          # 调 Go 解析 .dem → output/demo（硬事实源）
-  video_marking: false      # 运行 MobileNetV3 自动预测视频画面类型 (game/break)
-  preprocess_slice: false    # 视频标记(round_segmenter) + 视频切片(可选 ffmpeg 小片) → rounds.json
-  phase2_vision: false
-  phase3a_semantic: true     # llma：事件行 → 中性稿
-  phase3b_semantic: true     # llmb：中性稿 → 6657 口播
-  phase4_assemble: true
+  demo_parse: true  # 是否解析原始 .dem 并生成 output/demo 工件。
+  video_marking: true  # 是否运行 frame-type + 可选 replay 的视频粗标记（不调用 HUD YOLO/OCR）。
+  preprocess_slice: true  # 是否根据 segments 生成回合级 rounds.json。
+  phase2_yolo: true  # 是否运行 DEM 时间轴、HUD YOLO 和 POV/timer/score OCR 融合。
+  phase3a_semantic: true  # 是否运行结构化语义分析。
+  phase3b_semantic: true  # 是否运行人设/风格解说生成。
+  phase4_assemble: true  # 是否运行 TTS 和逐局音视频混合。
 
-# Debug 开关：开启后各阶段将输入/输出完整落盘到 output/debug_phase3/，正式跑时保持 false。
 debug:
-  phase3: true              # true → 每局 LLM 输入 prompt/messages + 原始输出落盘供排查幻觉
+  phase3: true  # 是否保留 Phase3 调试输出；正式运行按需关闭。
 
 paths:
-  # ── 上游输入 ──
-  demo: data/raw/match.dem            # .dem 文件（demo_parse 输入）
-  demo_output_dir: output/demo        # demo 工件输出目录
-  video: data/raw/demo.mp4
-  map_name: Unknown
-  hud_detections_jsonl: examples/offline/demo_detections.jsonl  # 标记检测 JSONL（无 segments 时用）
-  segments_json:                      # 已有片段 JSON（提供则跳过 round_segmenter）
-  clip_dir:                           # 可选：切出每个小局视频到该目录
+  demo: data\temp\sucai\gamerlegion-vs-big-m2-ancient.dem  # 原始 demo 输入路径。
+  demo_output_dir: output/demo  # Go demo parser 的发布目录。
+  video: data\temp\sucai\test_30min_h264.mp4  # 整场视频输入路径。
+  map_name: Unknown  # 地图名；无法从外部数据获取时使用此值。
+  hud_detections_jsonl: examples/offline/demo_detections.jsonl  # video_marking 逐帧检测输出；正式运行会由事务路径覆盖。
+  segments_json:  # 可选的外部 segments 输入；为空时使用 video_marking 结果。
+  clip_dir:  # 可选的 Phase1 提前切片目录；为空时 Phase4 延迟切片。
 
-  # ── 中间/最终产物 ──
-  rounds_json: output/sbmachine/rounds.json
-  round_list_json: output/sbmachine/round_list.json
-  segments_out_json: output/sbmachine/segments.json
-  rounds_with_vision_json: output/sbmachine/rounds_with_vision.json
-  rounds_with_neutral_json: output/sbmachine/rounds_with_neutral.json
-  rounds_with_commentary_json: output/sbmachine/rounds_with_commentary.json
-  rounds_final_json: output/sbmachine/rounds_final.json
-  commentary_json: output/sbmachine/commentary.json
-  assemble_manifest_json: output/sbmachine/assemble_manifest.json
+  rounds_json: output/sbmachine/rounds.json  # Phase1 回合包。
+  round_list_json: output/sbmachine/round_list.json  # Phase1 轻量回合列表。
+  segments_out_json: output/sbmachine/segments.json  # Phase1 segments 输出。
+  rounds_with_yolo_json: output/sbmachine/rounds_with_yolo.json  # Phase2 时间轴、YOLO 和 POV 输出。
+  rounds_with_yolo_semantic_json: output/sbmachine/rounds_with_yolo_semantic.json  # Phase2 派生的精简 DEM 事实帧时间轴（list[round]，不含 YOLO box/tags）。
+  llma_input_json: output/sbmachine/llma_input.json  # Phase3a 定版的 LLM-A 输入中间产物：每窗规则集 plan + 增量状态报告(state_block) + 氛围帧。
+  rounds_with_neutral_json: output/sbmachine/rounds_with_neutral.json  # Phase3a 中性语义输出。
+  rounds_with_commentary_json: output/sbmachine/rounds_with_commentary.json  # Phase3b 解说输出。
+  rounds_final_json: output/sbmachine/rounds_final.json  # Phase4 最终回合包。
+  commentary_json: output/sbmachine/commentary.json  # Phase3b 独立 commentary 契约文件。
+  assemble_manifest_json: output/sbmachine/assemble_manifest.json  # Phase4 音视频产物清单。
 
 phase4:
-  output_dir: output/sbmachine/rounds   # 逐局产物输出目录（wav + mp4）
-  commentary_volume: 1.0                # 解说音量 (0.0~1.0)
-  game_audio_volume: 0.25              # 游戏原声音量 (0.0~1.0)
-  make_video: false                     # true 才逐局切片+混音，默认仅产逐局 wav
+  output_dir: output/sbmachine/rounds  # 逐局 WAV、scene WAV 和 MP4 输出目录。
+  tts_cache_dir: output/tts_cache  # TTS 文本/配置指纹缓存目录。
+  clip_cache_dir: output/clips  # 从整场视频延迟切出的逐局视频缓存目录。
+  commentary_volume: 1.0  # 解说音量倍数。
+  game_audio_volume: 0.25  # 游戏原声音量倍数。
+  make_video: false  # 是否生成逐局带混音 MP4；false 时只生成音频。

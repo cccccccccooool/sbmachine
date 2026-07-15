@@ -44,7 +44,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# PyQt5 / PyTorch WinError DLL load workaround
+# 提前导入 torch，规避 Windows 上 PyQt5/PyTorch 的 WinError DLL 加载冲突
 try:
     import torch
 except ImportError:

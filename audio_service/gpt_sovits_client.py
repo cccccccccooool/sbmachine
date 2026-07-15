@@ -1,0 +1,324 @@
+"""6657 风格离线录像解说 AI 项目
+项目功能：搭建一个"整段 CS2 录像 -> 分回合时间线 -> 人设 LLM 解说文本 -> GPT-SoVITS 语音"的离线生成流水线。
+本文件功能：GPT-SoVITS 语音合成 API 客户端。
+
+启动方式：被 sbmachine/phase4_assemble.py 的 run_phase4() 导入调用；也可独立运行（python audio_service/gpt_sovits_client.py --text ... --output ...）。
+输入数据流：解说文本字符串和 GPT-SoVITS 运行时配置（YAML）。
+输出数据流：写入 WAV 音频文件到指定路径。
+用法用途：通过 synthesize() 合成普通语音，通过 synthesize_emotional() 按情绪分段合成并拼接，
+通过 set_weights() 切换模型权重，通过 _concat_audio/_concat_wav_stdlib 拼接多段音频。
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import io
+import json
+import os
+import sys
+import wave
+from functools import lru_cache
+from pathlib import Path
+
+import requests
+
+try:
+    import yaml
+except ImportError:
+    print("Missing pyyaml. Please install pyyaml first.")
+    sys.exit(1)
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from sbmachine.file_lock import FileLock
+
+
+def resolve_path(value: str | Path) -> Path:
+    path = Path(value)
+    return path if path.is_absolute() else PROJECT_ROOT / path
+
+
+def read_config(path: Path) -> dict:
+    with path.open("r", encoding="utf-8") as file:
+        return yaml.safe_load(file) or {}
+
+
+def _api_url(config: dict) -> str:
+    api_config = config.get("api", {})
+    host = os.getenv("GPT_SOVITS_API_HOST") or api_config.get("host", "127.0.0.1")
+    port = int(os.getenv("GPT_SOVITS_API_PORT") or api_config.get("port", 9880))
+    return f"http://{host}:{port}"
+
+
+def set_weights(api_url: str, gpt_weights: str, sovits_weights: str) -> None:
+    gpt_weights = os.getenv("GPT_SOVITS_GPT_WEIGHTS") or gpt_weights
+    sovits_weights = os.getenv("GPT_SOVITS_SOVITS_WEIGHTS") or sovits_weights
+    if gpt_weights:
+        response = requests.get(f"{api_url}/set_gpt_weights", params={"weights_path": gpt_weights}, timeout=60)
+        response.raise_for_status()
+    if sovits_weights:
+        response = requests.get(f"{api_url}/set_sovits_weights", params={"weights_path": sovits_weights}, timeout=60)
+        response.raise_for_status()
+
+
+def _emotion_speed_factors() -> dict[str, float]:
+    """加载实际发给 GPT-SoVITS 的各情绪语速系数。"""
+    try:
+        rules_path = PROJECT_ROOT / "Prompt" / "json" / "hype_rules.json"
+        rules = json.loads(rules_path.read_text(encoding="utf-8"))
+        values = rules.get("speech_rate", {}).get("emotion_speed_factor", {})
+        return {str(emotion): float(value) for emotion, value in values.items()}
+    except Exception:
+        return {}
+
+
+def _tts_payload(text: str, ref: dict, media_type: str = "wav", speed_factor: float = 1.0) -> dict:
+    return {
+        "text": text,
+        "text_lang": ref.get("text_lang", ref.get("prompt_lang", "zh")),
+        "ref_audio_path": str(resolve_path(ref.get("audio_path", "data/voice/reference/6657_ref.wav"))),
+        "prompt_text": ref.get("prompt_text", ""),
+        "prompt_lang": ref.get("prompt_lang", "zh"),
+        "text_split_method": "cut5",
+        "batch_size": 1,
+        "media_type": media_type,
+        "streaming_mode": False,
+        "speed_factor": speed_factor,
+    }
+
+
+def _validate_wav_bytes(wav_bytes: bytes) -> tuple[int, int, int, int]:
+    """拒绝非完整、空的、非 PCM 的 WAV 响应体，防止把坏音频写入磁盘。"""
+    try:
+        with wave.open(io.BytesIO(wav_bytes), "rb") as wav:
+            if wav.getcomptype() != "NONE":
+                raise ValueError(f"unsupported WAV compression: {wav.getcomptype()}")
+            channels = wav.getnchannels()
+            sample_width = wav.getsampwidth()
+            sample_rate = wav.getframerate()
+            frame_count = wav.getnframes()
+            if channels <= 0 or sample_width <= 0 or sample_rate <= 0 or frame_count <= 0:
+                raise ValueError("WAV has invalid or empty audio parameters")
+            frames = wav.readframes(frame_count)
+            expected_size = frame_count * channels * sample_width
+            if len(frames) != expected_size:
+                raise ValueError(f"truncated WAV data: expected {expected_size} bytes, got {len(frames)}")
+    except (EOFError, wave.Error) as exc:
+        raise ValueError("GPT-SoVITS response is not a decodable WAV") from exc
+    return channels, sample_width, sample_rate, frame_count
+
+
+def _reference_fingerprint(ref: dict, speed_factor: float) -> dict:
+    payload = _tts_payload("", ref, speed_factor=speed_factor)
+    audio_path = Path(payload["ref_audio_path"])
+    audio_sha256 = None
+    if audio_path.is_file():
+        audio_sha256 = hashlib.sha256(audio_path.read_bytes()).hexdigest()
+    return {
+        "audio_path": str(audio_path),
+        "audio_sha256": audio_sha256,
+        "prompt_text": payload["prompt_text"],
+        "prompt_lang": payload["prompt_lang"],
+        "text_lang": payload["text_lang"],
+        "speed_factor": payload["speed_factor"],
+    }
+
+
+@lru_cache(maxsize=16)
+def _versioned_file_sha256(path_value: str, _size: int, _mtime_ns: int, _ctime_ns: int) -> str:
+    digest = hashlib.sha256()
+    with Path(path_value).open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _weight_fingerprint(value: str | Path) -> dict:
+    path = resolve_path(value) if value else None
+    content_sha256 = None
+    if path is not None and path.is_file():
+        stat = path.stat()
+        content_sha256 = _versioned_file_sha256(
+            str(path),
+            stat.st_size,
+            stat.st_mtime_ns,
+            stat.st_ctime_ns,
+        )
+    return {
+        "path": str(path) if path is not None else "",
+        "sha256": content_sha256,
+    }
+
+
+def tts_cache_fingerprint(config: dict, text: str) -> str:
+    """对所有可能改变情绪 TTS 输出的运行时值取指纹，用于缓存命中判定。"""
+    from audio_service.emotion import parse_emotional_text, resolve_emotion_ref
+
+    model = dict(config.get("model", {}))
+    model["gpt_weights"] = os.getenv("GPT_SOVITS_GPT_WEIGHTS") or model.get("gpt_weights", "")
+    model["sovits_weights"] = os.getenv("GPT_SOVITS_SOVITS_WEIGHTS") or model.get("sovits_weights", "")
+    model["gpt_weights"] = _weight_fingerprint(model["gpt_weights"])
+    model["sovits_weights"] = _weight_fingerprint(model["sovits_weights"])
+    default_ref = config.get("reference", {})
+    emotion_refs = config.get("emotion_refs", {})
+    speed_map = _emotion_speed_factors()
+    references = []
+    for segment in parse_emotional_text(text):
+        speed = float(speed_map.get(segment.emotion, 1.0))
+        ref = resolve_emotion_ref(segment.emotion, emotion_refs, default_ref)
+        references.append({
+            "emotion": segment.emotion,
+            **_reference_fingerprint(ref, speed),
+        })
+    encoded = json.dumps(
+        {"model": model, "references": references},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _synthesize_bytes(config: dict, text: str, ref: dict, speed_factor: float = 1.0) -> bytes:
+    """调用 GPT-SoVITS 的 /tts 接口，返回原始 WAV 字节，不落盘。"""
+    api_url = _api_url(config)
+    response = requests.post(f"{api_url}/tts", json=_tts_payload(text, ref, speed_factor=speed_factor), timeout=300)
+    response.raise_for_status()
+    wav_bytes = response.content
+    _validate_wav_bytes(wav_bytes)
+    return wav_bytes
+
+
+def synthesize_segment(config: dict, text: str, ref: dict, output_path: Path) -> Path:
+    wav_bytes = _synthesize_bytes(config, text, ref)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_bytes(wav_bytes)
+    return output_path
+
+
+def synthesize(config: dict, text: str, output_path: Path) -> None:
+    model_config = config.get("model", {})
+    set_weights(_api_url(config), model_config.get("gpt_weights", ""), model_config.get("sovits_weights", ""))
+    synthesize_segment(config, text, config.get("reference", {}), output_path)
+    print(f"audio written: {output_path}")
+
+
+def synthesize_emotional(config: dict, text: str, output_path: Path) -> Path:
+    """按情绪分段合成,全程在内存中拼接 PCM,最后一次写出 WAV。不生成中间段文件。"""
+    from audio_service.emotion import parse_emotional_text, resolve_emotion_ref
+
+    model_config = config.get("model", {})
+    set_weights(_api_url(config), model_config.get("gpt_weights", ""), model_config.get("sovits_weights", ""))
+
+    default_ref = config.get("reference", {})
+    emotion_refs = config.get("emotion_refs", {})
+    segments = parse_emotional_text(text)
+    if not segments:
+        raise ValueError("commentary text is empty or contains only emotion tags")
+
+    # 顶部一次性加载 emotion_speed_factor，避免每次调用 _emotion_speed_factor 重复读磁盘
+    speed_map = _emotion_speed_factors()
+
+    # 按情绪批量请求,保持原始顺序
+    ordered_bytes: list[bytes] = [b""] * len(segments)
+    by_emotion: dict[str, list[int]] = {}
+    for i, seg in enumerate(segments):
+        by_emotion.setdefault(seg.emotion, []).append(i)
+
+    for emotion, indices in by_emotion.items():
+        ref = resolve_emotion_ref(emotion, emotion_refs, default_ref)
+        speed = float(speed_map.get(emotion, 1.0))
+        for i in indices:
+            ordered_bytes[i] = _synthesize_bytes(config, segments[i].text, ref, speed_factor=speed)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if len(ordered_bytes) == 1:
+        output_path.write_bytes(ordered_bytes[0])
+    else:
+        _concat_wav_bytes(ordered_bytes, output_path)
+    print(f"audio written: {output_path} ({len(segments)} segments, in-memory concat)")
+    return output_path
+
+
+def _concat_wav_bytes(wav_blobs: list[bytes], output_path: Path) -> None:
+    """把内存中的多段 WAV 字节拼接成单个 WAV 文件，不使用临时文件。"""
+    params = None
+    all_frames: list[bytes] = []
+    with wave.open(io.BytesIO(wav_blobs[0]), "rb") as first:
+        params = first.getparams()
+        all_frames.append(first.readframes(first.getnframes()))
+    for blob in wav_blobs[1:]:
+        with wave.open(io.BytesIO(blob), "rb") as w:
+            if w.getparams()[:3] != params[:3]:  # nchannels, sampwidth, framerate
+                raise RuntimeError(
+                    f"WAV format mismatch: expected {params[:3]}, got {w.getparams()[:3]}"
+                )
+            all_frames.append(w.readframes(w.getnframes()))
+
+    with wave.open(str(output_path), "wb") as out:
+        out.setparams(params)
+        for chunk in all_frames:
+            out.writeframes(chunk)
+
+
+def _concat_audio(parts: list[Path], output_path: Path) -> None:
+    try:
+        from pydub import AudioSegment
+    except ImportError:
+        _concat_wav_stdlib(parts, output_path)
+        return
+
+    combined = AudioSegment.empty()
+    for part in parts:
+        combined += AudioSegment.from_file(part)
+    combined.export(output_path, format=output_path.suffix.lower().lstrip(".") or "wav")
+
+
+def _concat_wav_stdlib(parts: list[Path], output_path: Path) -> None:
+    import io
+    import wave
+
+    if output_path.suffix.lower() != ".wav":
+        raise RuntimeError("pydub is required to concatenate non-wav audio")
+    with wave.open(str(parts[0]), "rb") as first:
+        params = first.getparams()
+        frames = [first.readframes(first.getnframes())]
+    for part in parts[1:]:
+        with wave.open(str(part), "rb") as wav:
+            frames.append(wav.readframes(wav.getnframes()))
+    with wave.open(str(output_path), "wb") as out:
+        out.setparams(params)
+        for chunk in frames:
+            out.writeframes(chunk)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Call GPT-SoVITS API to synthesize commentary audio.")
+    parser.add_argument("--config", default="audio_service/gpt_sovits_runtime.yaml")
+    parser.add_argument("--text", required=True)
+    parser.add_argument("--output", default="output/tts_demo.wav")
+    parser.add_argument("--emotional", action="store_true")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    try:
+        config = read_config(resolve_path(args.config))
+        with FileLock(PROJECT_ROOT / "output" / ".sovits.lock"):
+            if args.emotional:
+                synthesize_emotional(config, args.text, resolve_path(args.output))
+            else:
+                synthesize(config, args.text, resolve_path(args.output))
+    except Exception as exc:
+        print(f"synthesis failed: {exc}")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,9 +1,9 @@
 tts:
-  config: audio_service/gpt_sovits_runtime.yaml
-  output_dir: output/sbmachine/audio
-  final_audio: output/sbmachine/final_commentary.wav
+  config: audio_service/gpt_sovits_runtime.yaml  # GPT-SoVITS 服务运行配置。
+  output_dir: output/sbmachine/audio  # 逐局和逐 scene WAV 输出目录。
+  final_audio: output/sbmachine/final_commentary.wav  # 可选的整场解说音频输出。
 
 video:
-  make_filtered_video: false
-  clip_dir: output/sbmachine/video_clips
-  final_video: output/sbmachine/final_video.mp4
+  make_filtered_video: false  # 旧音频过滤流程是否生成视频；Phase4 使用 pipeline.phase4.make_video。
+  clip_dir: output/sbmachine/video_clips  # 旧视频过滤流程的片段目录。
+  final_video: output/sbmachine/final_video.mp4  # 旧视频过滤流程的最终视频路径。
