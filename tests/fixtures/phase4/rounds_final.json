@@ -1,0 +1,31 @@
+{
+  "rounds_final": {
+    "rounds": [
+      {
+        "round_no": 1,
+        "start_sec": 0.0,
+        "end_sec": 12.0,
+        "_phase4_audio": {"audio_path": "rounds/round_001.wav", "duration_sec": 12.0}
+      }
+    ]
+  },
+  "assemble_manifest": {
+    "rounds": [
+      {
+        "round_no": 1,
+        "audio_path": "rounds/round_001.wav",
+        "video_path": "rounds/round_001.mp4",
+        "aligned": true,
+        "segments": [
+          {
+            "source_start_sec": 2.0,
+            "source_end_sec": 5.0,
+            "relative_start_sec": 2.0,
+            "audio_duration_sec": 1.5,
+            "audio_path": "rounds/round_001_scene_001.wav"
+          }
+        ]
+      }
+    ]
+  }
+}

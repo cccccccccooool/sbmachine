@@ -1,0 +1,19 @@
+{
+  "video_path": "sample.mp4",
+  "map_name": "de_mirage",
+  "rounds": [
+    {
+      "round_no": 1,
+      "start_sec": 0.0,
+      "end_sec": 12.0,
+      "_phase2_yolo": {
+        "key_frames": [
+          {"time_sec": 0.0, "gate_reason": "demo_only", "has_frame": false, "background_info": {"when": {"video_time": 0.0}, "what": {}}},
+          {"time_sec": 3.0, "gate_reason": "phase1_hud_reuse", "has_frame": true, "background_info": {"when": {"video_time": 3.0}, "who": {"pov_player": "p1"}, "what": {}}},
+          {"time_sec": 6.0, "gate_reason": "demo_only", "has_frame": false, "background_info": {"when": {"video_time": 6.0}, "what": {}}},
+          {"time_sec": 9.0, "gate_reason": "ui_yolo_signal", "has_frame": true, "background_info": {"when": {"video_time": 9.0}, "who": {"pov_player": "p2"}, "what": {}}}
+        ]
+      }
+    }
+  ]
+}
