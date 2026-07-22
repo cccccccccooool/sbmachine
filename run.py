@@ -16,6 +16,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Sequence
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
@@ -26,11 +27,11 @@ from sbmachine.common import require_path
 from sbmachine.run_all import run_all
 
 
-def main() -> int:
+def _legacy_main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="6657 解说流水线（config 驱动，一键运行）")
     ap.add_argument("--config", default="config/", help="配置目录或文件（默认 config/）")
     ap.add_argument("--dry-run", action="store_true", help="不调 AI，只跑 JSON 链路自检")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     try:
         config_path = require_path(args.config, "--config")
@@ -57,6 +58,16 @@ def main() -> int:
     if args.dry_run:
         return 0 if result.get("config_valid", False) else 2
     return int(result.get("exit_code", 1))
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Keep the original pipeline entry while delegating runtime commands."""
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] in {"doctor", "setup", "run"}:
+        from sbmachine.launcher import main as launcher_main
+
+        return launcher_main(arguments)
+    return _legacy_main(arguments)
 
 
 if __name__ == "__main__":

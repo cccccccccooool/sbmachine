@@ -1,6 +1,7 @@
 profile: lite  # 当前运行/训练档位标识；运行时主要用于记录和选择默认策略。
 
 runtime:
+  backend: local  # local: host processes; container: host core plus Compose talk/voice services.
   manage_services: true  # 是否由编排器自动启动/停止本地或 Compose 服务。
   compose_file: docker-compose.yml  # manage_services 使用的 Compose 文件。
   one_model_at_a_time: true  # 是否串行占用语义和 TTS 模型显存。

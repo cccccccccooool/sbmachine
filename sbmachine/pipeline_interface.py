@@ -17,16 +17,13 @@ if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
 from sbmachine.common import require_path, resolve_backend, resolve_path
-from sbmachine.file_lock import FileLock
+
 from sbmachine.phase1_preprocess_slice import run_preprocess_slice
-from sbmachine.phase2_yolo import run_phase2
-from sbmachine.phase3a_analyst import run_phase3a
-from sbmachine.phase3b_style import run_phase3b
-from sbmachine.phase4_assemble import run_phase4
+
 from sbmachine.preflight import (
     phase_enabled,
     require_outputs,
-    validate_commentary_publishable,
+
     validate_demo_publishable,
     validate_neutral_publishable,
     validate_phase1_publishable,
@@ -35,17 +32,16 @@ from sbmachine.preflight import (
 )
 from sbmachine.run_context import RunContext
 from sbmachine.upstream_jobs import _call_gpu_guard, _run_demo_parse
+from sbmachine.runtime_backend import RuntimeBackend, create_runtime_backend, resolve_runtime_backend
 
 def _phase_enabled(phases: dict, new_key: str, old_key: str, default: bool = True) -> bool:
     return phase_enabled(phases, new_key, old_key, default)
-
 
 def _phase3_enabled(phases: dict) -> tuple[bool, bool]:
     return (
         _phase_enabled(phases, "phase3a_semantic", "phase3_semantic", True),
         _phase_enabled(phases, "phase3b_semantic", "phase3_semantic", True),
     )
-
 
 def _phase3_active_backends(phases: dict, config: dict) -> list[str]:
     p3a, p3b = _phase3_enabled(phases)
@@ -56,10 +52,8 @@ def _phase3_active_backends(phases: dict, config: dict) -> list[str]:
         backends.append(resolve_backend(config, "style"))
     return backends
 
-
 def _phase3_local_service_name(phases: dict, config: dict) -> str | None:
     return "vllm" if "vllm" in _phase3_active_backends(phases, config) else None
-
 
 def _select_preprocess_segments(slicer_segments_path: Path | None, configured_segments_path: Path | None) -> Path | None:
     if slicer_segments_path is not None and slicer_segments_path.exists():
@@ -69,7 +63,6 @@ def _select_preprocess_segments(slicer_segments_path: Path | None, configured_se
         print(f"[preprocess_slice] use configured segments: {configured_segments_path}")
         return configured_segments_path
     return None
-
 
 def _run_video_marking(
     paths: dict,
@@ -118,16 +111,9 @@ def _run_video_marking(
         _call_gpu_guard("resume", use_gpu_guard)
     return out_jsonl, out_segments
 
-
 def _remove_file(path: Path) -> None:
     if path.is_file() or path.is_symlink():
         path.unlink()
-
-
-def _remove_phase4_output_dir(config: dict) -> None:
-    output_dir = resolve_path(config.get("phase4", {}).get("output_dir"))
-    if output_dir is not None and output_dir.exists():
-        shutil.rmtree(output_dir)
 
 @dataclass(frozen=True)
 class StageSpec:
@@ -140,114 +126,42 @@ class StageSpec:
     service_group: str | None = None
     prepares_runtime: bool = False
 
-
 class ServiceBackend:
-    """Logical service lifecycle interface used by every stage executor."""
+    """Adapter that keeps the old executor surface on one RuntimeBackend."""
+
+    def __init__(self, runtime: RuntimeBackend) -> None:
+        self.runtime = runtime
 
     def prepare_runtime(self, runner: "PipelineInterface") -> None:
-        return None
+        self.runtime.prepare_runtime(
+            enable_talk=runner.is_enabled("phase3_semantic"),
+            enable_voice=runner.is_enabled("phase4"),
+            phase3_service=runner.phase3_service,
+        )
 
     def start_group(self, group: str, runner: "PipelineInterface") -> None:
-        raise NotImplementedError
+        self.runtime.start_group(group, phase3_service=runner.phase3_service)
 
     def stop_group(self, group: str, runner: "PipelineInterface") -> None:
-        raise NotImplementedError
+        self.runtime.stop_group(group, phase3_service=runner.phase3_service)
+
+    def run_stage(self, stage: str, args: tuple[str, ...], workspace: Path) -> Path:
+        return self.runtime.run_stage(stage, args, workspace)
 
     def close(self) -> None:
-        return None
-
+        self.runtime.cleanup()
 
 class LocalServiceBackend(ServiceBackend):
-    """ServiceManager adapter for the existing local subprocess mode."""
+    """Compatibility name for the local RuntimeBackend adapter."""
 
     def __init__(self, config: dict) -> None:
-        self._config = config
-        self._one_at_a_time = bool(config.get("runtime", {}).get("one_model_at_a_time", True))
-        self._manager = None
-
-    def _manager_or_create(self):
-        if self._manager is None:
-            from sbmachine.service_manager import ServiceManager
-
-            self._manager = ServiceManager(self._config)
-        return self._manager
-
-    @staticmethod
-    def _service_for(group: str, runner: "PipelineInterface") -> str | None:
-        if group == "semantic":
-            return runner.phase3_service
-        if group == "audio":
-            return "sovits"
-        raise ValueError(f"unknown local service group: {group}")
-
-    def prepare_runtime(self, runner: "PipelineInterface") -> None:
-        manager = self._manager_or_create()
-        if self._one_at_a_time:
-            return
-        if runner.is_enabled("phase3_semantic") and runner.phase3_service:
-            manager.start(runner.phase3_service)
-        if runner.is_enabled("phase4"):
-            manager.start("sovits")
-
-    def start_group(self, group: str, runner: "PipelineInterface") -> None:
-        if not self._one_at_a_time:
-            return
-        service = self._service_for(group, runner)
-        if service:
-            self._manager_or_create().start(service)
-
-    def stop_group(self, group: str, runner: "PipelineInterface") -> None:
-        if not self._one_at_a_time:
-            return
-        service = self._service_for(group, runner)
-        if service:
-            self._manager_or_create().stop(service)
-
-    def close(self) -> None:
-        if self._manager is not None:
-            self._manager.stop_all()
-
+        super().__init__(create_runtime_backend(config, "local"))
 
 class ComposeServiceBackend(ServiceBackend):
-    """ComposeManager adapter; logical names stay independent from compose names."""
+    """Compatibility name for the container RuntimeBackend adapter."""
 
     def __init__(self, config: dict) -> None:
-        self._config = config
-        self._compose_file = str(config.get("runtime", {}).get("compose_file", "docker-compose.yml"))
-        self._manager = None
-
-    def _manager_or_create(self):
-        if self._manager is None:
-            from sbmachine.compose_manager import ComposeManager
-
-            self._manager = ComposeManager(self._config, compose_file=self._compose_file)
-        return self._manager
-
-    @staticmethod
-    def _service_for(group: str, runner: "PipelineInterface") -> str | None:
-        if group == "semantic":
-            return "talk_service" if runner.phase3_service else None
-        if group == "audio":
-            return "audio_service"
-        raise ValueError(f"unknown compose service group: {group}")
-
-    def prepare_runtime(self, runner: "PipelineInterface") -> None:
-        self._manager_or_create()
-
-    def start_group(self, group: str, runner: "PipelineInterface") -> None:
-        service = self._service_for(group, runner)
-        if service:
-            self._manager_or_create().up_one(service)
-
-    def stop_group(self, group: str, runner: "PipelineInterface") -> None:
-        service = self._service_for(group, runner)
-        if service:
-            self._manager_or_create().down_one(service)
-
-    def close(self) -> None:
-        if self._manager is not None:
-            self._manager.down_all()
-
+        super().__init__(create_runtime_backend(config, "container"))
 
 class StageExecutor:
     """Execution strategy paired with a service backend."""
@@ -312,22 +226,15 @@ class StageExecutor:
         validate_phase1_publishable(outputs[0], outputs[1], outputs[2])
         runner.context.checkpoint("phase1")
 
-
-def _spawn(module: str, config_path: Path, log_path: Path) -> None:
-    """通过独立 Python 进程执行本地阶段，并把输出写入本次事务诊断目录。"""
-    cmd = [sys.executable, "-m", module, "--config", str(config_path)]
-    print(f"[pipeline_interface] spawn {module}")
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("w", encoding="utf-8") as log_file:
-        result = subprocess.run(cmd, stdout=log_file, stderr=subprocess.STDOUT)
-    if result.returncode != 0:
-        raise RuntimeError(f"{module} exited with code {result.returncode}")
-
 class LocalStageExecutor(StageExecutor):
-    """Keep the existing local module entry points behind the common stage interface."""
+    """Shared host-core stage executor; only talk/voice lifecycle varies by runtime."""
 
     def _execute_phase2(self, runner: "PipelineInterface") -> None:
-        _spawn("sbmachine.phase_yolo", runner.config_path, runner.context.diagnostics_dir / "phase2.log")
+        self.services.run_stage(
+            "phase2",
+            ("-m", "sbmachine.phase_yolo", "--config", str(runner.config_path)),
+            runner.context.diagnostics_dir,
+        )
         validate_phase2_publishable(
             require_path(
                 runner.paths.get("rounds_with_yolo_json"),
@@ -339,7 +246,11 @@ class LocalStageExecutor(StageExecutor):
     def _execute_phase3_semantic(self, runner: "PipelineInterface") -> None:
         p3a, p3b = _phase3_enabled(runner.phases)
         try:
-            _spawn("sbmachine.phase_semantic", runner.config_path, runner.context.diagnostics_dir / "phase3.log")
+            self.services.run_stage(
+                "phase3",
+                ("-m", "sbmachine.phase_semantic", "--config", str(runner.config_path)),
+                runner.context.diagnostics_dir,
+            )
         except BaseException:
             if p3a:
                 neutral = require_path(
@@ -357,87 +268,18 @@ class LocalStageExecutor(StageExecutor):
             raise
 
     def _execute_phase4(self, runner: "PipelineInterface") -> None:
-        _spawn("sbmachine.phase_tts", runner.config_path, runner.context.diagnostics_dir / "phase4.log")
+        self.services.run_stage(
+            "phase4",
+            ("-m", "sbmachine.phase_tts", "--config", str(runner.config_path)),
+            runner.context.diagnostics_dir,
+        )
         validate_phase4_publishable(
             require_path(runner.paths.get("rounds_final_json"), "paths.rounds_final_json"),
             require_path(runner.paths.get("assemble_manifest_json"), "paths.assemble_manifest_json"),
         )
 
-
-class ComposeStageExecutor(StageExecutor):
-    """Keep host-side phase functions while Compose owns talk/audio service lifecycle."""
-
-    def prepare_stage(self, stage: StageSpec, runner: "PipelineInterface") -> None:
-        if stage.key == "phase2":
-            semantic_p2 = require_path(
-                runner.paths.get("rounds_with_yolo_semantic_json"),
-                "paths.rounds_with_yolo_semantic_json",
-            )
-            _remove_file(runner.rounds_p2)
-            _remove_file(semantic_p2)
-        elif stage.key == "phase4":
-            manifest = require_path(
-                runner.paths.get("assemble_manifest_json"),
-                "paths.assemble_manifest_json",
-            )
-            _remove_file(runner.rounds_p4)
-            _remove_file(manifest)
-            _remove_phase4_output_dir(runner.config)
-
-    def _execute_phase2(self, runner: "PipelineInterface") -> None:
-        semantic_p2 = require_path(
-            runner.paths.get("rounds_with_yolo_semantic_json"),
-            "paths.rounds_with_yolo_semantic_json",
-        )
-        run_phase2(
-            rounds_path=runner.rounds_p1,
-            output_path=runner.rounds_p2,
-            config_path=runner.config_path,
-            semantic_output_path=semantic_p2,
-        )
-        require_outputs("phase2", [runner.rounds_p2, semantic_p2])
-        validate_phase2_publishable(runner.rounds_p2)
-        runner.context.checkpoint("phase2")
-
-    def _execute_phase3_semantic(self, runner: "PipelineInterface") -> None:
-        p3a, p3b = _phase3_enabled(runner.phases)
-        if p3a:
-            _remove_file(runner.rounds_neutral)
-            run_phase3a(
-                rounds_path=runner.rounds_p2,
-                output_path=runner.rounds_neutral,
-                config_path=runner.config_path,
-            )
-            validate_neutral_publishable(runner.rounds_neutral)
-        if p3b:
-            runner.context.current_stage = "phase3b"
-            commentary = require_path(runner.paths.get("commentary_json"), "paths.commentary_json")
-            _remove_file(runner.rounds_p3)
-            _remove_file(commentary)
-            run_phase3b(
-                neutral_path=runner.rounds_neutral,
-                rounds_path=runner.rounds_p2,
-                output_rounds_path=runner.rounds_p3,
-                commentary_path=commentary,
-                config_path=runner.config_path,
-            )
-            validate_commentary_publishable(commentary)
-
-    def _execute_phase4(self, runner: "PipelineInterface") -> None:
-        manifest = require_path(
-            runner.paths.get("assemble_manifest_json"),
-            "paths.assemble_manifest_json",
-        )
-        with FileLock(PACKAGE_ROOT / "output" / ".sovits.lock"):
-            run_phase4(
-                rounds_path=runner.rounds_p3,
-                commentary_path=require_path(runner.paths.get("commentary_json"), "paths.commentary_json"),
-                output_rounds_path=runner.rounds_p4,
-                manifest_path=manifest,
-                config_path=runner.config_path,
-            )
-        validate_phase4_publishable(runner.rounds_p4, manifest)
-
+class ComposeStageExecutor(LocalStageExecutor):
+    """Container services with the same host-core stage implementation as local."""
 
 class PipelineInterface(ABC):
     """Ordered stage runner; its executor is the only local/Compose selection point."""
@@ -567,13 +409,11 @@ class PipelineInterface(ABC):
                 if gpu_released:
                     _call_gpu_guard("resume", self.use_gpu_guard)
 
-
 class LocalPipelineInterface(PipelineInterface):
     """本地子进程 + ServiceManager 的独立编排接口。"""
 
     def _create_executor(self) -> StageExecutor:
         return LocalStageExecutor(LocalServiceBackend(self.config))
-
 
 class ComposePipelineInterface(PipelineInterface):
     """宿主阶段函数 + Compose 服务生命周期的独立编排接口。"""
@@ -581,13 +421,12 @@ class ComposePipelineInterface(PipelineInterface):
     def _create_executor(self) -> StageExecutor:
         return ComposeStageExecutor(ComposeServiceBackend(self.config))
 
-
 def select_pipeline_interface(
     config_path: Path,
     config: dict,
     context: RunContext,
 ) -> PipelineInterface:
     """根据运行配置选择独立编排接口；run_all 不接触具体后端。"""
-    if bool(config.get("runtime", {}).get("manage_services", False)):
+    if resolve_runtime_backend(config) == "local":
         return LocalPipelineInterface(config_path, config, context)
     return ComposePipelineInterface(config_path, config, context)

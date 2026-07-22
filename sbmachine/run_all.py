@@ -1,6 +1,7 @@
 """事务化流水线总入口；阶段编排委派给独立的 pipeline_interface。"""
 from __future__ import annotations
 
+import copy
 import sys
 import traceback
 from pathlib import Path
@@ -53,7 +54,12 @@ def _execute_pipeline(config_path: Path, config: dict, context: RunContext) -> N
 
     select_pipeline_interface(config_path, config, context).run()
 
-def run_all(config_path, *, dry_run: bool = False) -> dict:
+def run_all(
+    config_path,
+    *,
+    dry_run: bool = False,
+    runtime_backend: str | None = None,
+) -> dict:
     """运行流水线，返回如实反映状态的预检或最终状态对象。"""
     try:
         config = load_config(config_path)
@@ -75,6 +81,9 @@ def run_all(config_path, *, dry_run: bool = False) -> dict:
             "previous_success_preserved": True,
             "exit_code": 2,
         }
+    if runtime_backend is not None:
+        config = copy.deepcopy(config)
+        config.setdefault("runtime", {})["backend"] = runtime_backend
     report = preflight_config(config, root=PACKAGE_ROOT)
     if dry_run:
         return report
