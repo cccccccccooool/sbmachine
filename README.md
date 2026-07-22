@@ -19,8 +19,7 @@
 | `database/maps/` | 人工地图空间关系模板（**当前为空**，spatial 层 fail-closed 降级，补模板即自动启用附近人归类） |
 | `models/` | YOLO / 帧分类权重 |
 | `tools/` | 仅 run 链子集：demo 解析（Go）、demo_manifest、debug/phase2、slicing 三件、simple_vlm_server |
-
-明确排除：`tools/start/gpu_guard.py`（个人工具，代码已做缺失守卫，静默跳过）、`tests/`、`training/`、`data_pipeline/`、`vlm/`、其余 tools 子目录。
+| `tests/` | 随发布件携带的 Phase2 / Phase3a / Phase3b / Phase4 离线契约测试与小型 JSON fixture |
 
 
 ## 数据流（当前架构）
@@ -60,12 +59,59 @@ phase4   phase4_assemble.py  → TTS + 时间戳对齐混音 → rounds_final.js
 | `output/sbmachine/rounds/round_NNN.wav/.mp4` | 逐局成品 |
 
 ## 使用方式
-调配好config/ 下的相关配置后直接在根目录下运行
+
+### 第一次使用：先选择并准备一种运行方式
+
+每次只选择一种运行方式：
+
+| 运行方式 | 运行前必须准备 | 当前实现 |
+|---|---|---|
+| `local` | 本机 talk / voice 环境已经可用，且 `config/pipeline.yaml` 中的服务启动命令可运行 | 宿主机 core；按配置启动本机 talk / voice 进程 |
+| `container` | Docker、NVIDIA 容器运行时、Compose 服务镜像和模型资产已经可用 | 宿主机 core；按阶段用 Compose 启动和停止 `talk_service` / `audio_service`；当前是混合容器基线，**不是** core/talk/voice 三容器实现 |
+
+`setup` 只校验现有条件并记录选择，**不**自动创建 Python 环境、不拉取 Docker 镜像，也不下载模型。
+
+### 推荐顺序
+
+1. 调整 `config/` 下的输入、模型和服务配置。
+2. 在选定的运行方式中准备上表所列条件。
+3. 检查环境：
+
+   ```bash
+   python run.py doctor --backend local
+   ```
+
+4. 环境就绪后记录选择：
+
+   ```bash
+   python run.py setup --backend local
+   ```
+
+5. 运行流水线：
+
+   ```bash
+   python run.py run
+   ```
+
+将命令中的 `local` 替换为 `container`，即可使用容器运行方式。`run` 只使用 `setup` 已记录的选择，绝不会暗中切换到另一种运行方式。
+
+### 已准备环境后的兼容入口
+
+调配好 `config/` 下的相关配置后，可以在根目录下直接运行：
+
 ```bash
 python run.py
 ```
-即可按照预设方案全链路拉起
-只不过当前第三阶段和第四阶段环境需求不同，docker我还没整理好公开出来，所以还是运行不了
+
+该入口不读取 `.sbmachine/runtime.json`，用于已准备环境的兼容调用，不建议作为第一次使用的入口。
+
+## 测试
+
+```bash
+python -m pytest tests/contract/test_phase2_contract.py tests/contract/test_phase3a_contract.py tests/contract/test_phase3b_contract.py tests/contract/test_phase4_contract.py -q
+```
+
+这四项分别覆盖 Phase2、Phase3a、Phase3b、Phase4 的 JSON 输出格式。
 
 ## 配置需求
 | 模式 | 显存 | 调用模型 |
@@ -82,7 +128,7 @@ python run.py
 - 后面有精力将map的地图模型完善下，以启用附近人归类功能
 - 自己通过api模式收集到充足的stf数据后，尝试训练一个更适合的llm模型
 - 十分的想在8GB显存上部署，但是qwen3 8b性能实在过于弱，不得以才上qwen3 14b，后续数据上来了我看能不能蒸回8b
-- 严格来说第四部分还没完全完善，代表音频还没切分出来，并且调用端用的还是web页面，但我单轮测试通过了，后续在慢慢更改
+- 严格来说第四部分还没完全完善，代表音频还没切分出来，后续在慢慢更改
 - 现在最大问题还是在第一二阶段速度过慢，未来搜寻别的方案
 - 真的无法复刻玩宝宝那种多姿多样的解说风格🥺🥺，我拼尽全力现在也只能说的是cs demo评判器，只不过是玩宝宝声音说出来的，等一轮数据收集完了再看看
 - GPT-SoVITS模型权重就不打算公布出来了
