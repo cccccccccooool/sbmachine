@@ -14,24 +14,6 @@ ENV PYTHONUNBUFFERED=1 \
 USER root
 WORKDIR /workspace
 
-# ── SSH server ──────────────────────────────────────────────────────────────
-# 允许 VS Code Remote-SSH 直连 talk 容器。
-# 密码通过 AI6657_SSH_PASSWORD 环境变量传入；不设则启动时随机生成并打印到日志。
-RUN DEBIAN_FRONTEND=noninteractive apt-get update \
-    && apt-get install -y --no-install-recommends openssh-server \
-    && mkdir -p /var/run/sshd \
-    # 允许 root 密码登录（匹配注释和未注释行）
-    && sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config \
-    && sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config \
-    # Docker 容器 PAM 经典修复：防止登录后立即被踢
-    && sed -i 's@session\s*required\s*pam_loginuid.so@session optional pam_loginuid.so@g' /etc/pam.d/sshd \
-    # 保活：防止空闲断连
-    && echo 'ClientAliveInterval 30' >> /etc/ssh/sshd_config \
-    && echo 'ClientAliveCountMax 3' >> /etc/ssh/sshd_config \
-    # 生成 host keys（构建时做一次，启动时 entrypoint 再兜底检查）
-    && ssh-keygen -A \
-    && rm -rf /var/lib/apt/lists/*
-
 COPY docker/talk_entrypoint.sh /opt/ai6657/talk_entrypoint.sh
 RUN chmod +x /opt/ai6657/talk_entrypoint.sh \
     && mkdir -p /root/.cache/huggingface
@@ -88,5 +70,5 @@ for raw in model.split(','):
 PYEOF
 HEREDOC
 
-EXPOSE 8000 22
+EXPOSE 8000
 ENTRYPOINT ["/opt/ai6657/talk_entrypoint.sh"]

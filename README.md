@@ -44,7 +44,7 @@ phase4   phase4_assemble.py  → TTS + 时间戳对齐混音 → rounds_final.js
 
 | 角色 | 模型 | 后端 |
 |---|---|---|
-| LLM（analyst + style） | Qwen3 系（见 `config/llm.yaml`） | vLLM 本地容器 或 OpenAI 兼容 API（`.env` 配置，LLMA/LLMB 前缀可分别覆盖） |
+| LLM（analyst + style） | Qwen3 系（见 `config/llm.yaml`） | vLLM 本地容器 或 OpenAI 兼容 API（`.env` 的 Global `API_KEY` / `BASE_URL` / `LLM_MODEL`） |
 | TTS | GPT-SoVITS | `audio_service/` + api_v2 |
 
 单卡错峰由 `config/pipeline.yaml` 的 `runtime.manage_services` / `one_model_at_a_time` 控制，任意时刻卡上只有一个模型。

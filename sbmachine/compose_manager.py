@@ -10,7 +10,6 @@ class ComposeManager:
     """启动单个 compose 服务，等待健康，阶段结束后停掉它。"""
 
     _HEALTH_NAME = {
-        "vision_service": "vlm",
         "talk_service": "talk",
         "audio_service": "sovits",
     }

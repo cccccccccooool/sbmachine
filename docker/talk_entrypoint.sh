@@ -9,29 +9,6 @@ PORT="${AI6657_VLLM_PORT:-8000}"
 MODEL_ID="${AI6657_TALK_MODEL:-${AI6657_TALK_MODELS:-Qwen/Qwen3-14B-AWQ}}"
 HF_ENDPOINTS="${AI6657_HF_ENDPOINTS:-https://hf-mirror.com,https://huggingface.co}"
 
-# ── SSH server ──────────────────────────────────────────────────────────────
-
-setup_ssh() {
-  # 兜底生成 host keys（构建时已生成，此处防缓存镜像缺失）
-  if [ ! -f /etc/ssh/ssh_host_rsa_key ]; then
-    ssh-keygen -A
-  fi
-  mkdir -p /var/run/sshd
-
-  ROOT_PASSWORD="${AI6657_SSH_PASSWORD:-}"
-  if [ -z "$ROOT_PASSWORD" ]; then
-    ROOT_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')"
-    echo "[talk] ═══════════════════════════════════════════════════"
-    echo "[talk]  AUTO-GENERATED SSH PASSWORD (root): ${ROOT_PASSWORD}"
-    echo "[talk]  ssh root@<host> -p 2222"
-    echo "[talk] ═══════════════════════════════════════════════════"
-  fi
-  echo "root:${ROOT_PASSWORD}" | chpasswd
-
-  /usr/sbin/sshd
-  echo "[talk] sshd started on port 22"
-}
-
 # ── Model download ──────────────────────────────────────────────────────────
 
 download_model() {
@@ -95,7 +72,6 @@ launch_model() {
 
 # ── main ────────────────────────────────────────────────────────────────────
 
-setup_ssh
 mkdir -p "$HF_HOME"
 
 MAX_ATTEMPTS="${AI6657_VLLM_MAX_ATTEMPTS:-2}"

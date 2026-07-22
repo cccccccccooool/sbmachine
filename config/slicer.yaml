@@ -1,21 +1,8 @@
 slicer:
-  # Game/break frame classifier checkpoint.
-  model: models/qiepian/frame_type_classifier.pt
-
-  # Sample one frame every N video seconds. Lower values improve boundary precision but cost more decode/inference time.
-  interval_sec: 1.0
-
-  # Trailing majority-vote window for frame labels. Larger values suppress flicker but delay transitions.
-  smooth_window: 5
-
-  # Drop detected live segments shorter than this many seconds.
-  min_live_sec: 20
-
-  # Always bridge adjacent live segments when the gap is at most this value unless replay evidence vetoes it.
-  bridge_gap_sec: 3
-
-  # Device for the lightweight game/break classifier: auto, cpu, cuda, or cuda:N.
-  device: auto
-
-  # Parallel contiguous video ranges. 1 disables multiprocessing; start with 4 and reduce if CPU/RAM is constrained.
-  workers: 10
+  model: models/slicer/frame_type_classifier.pt  # 帧类型分类模型权重路径；预检会校验该文件存在。
+  interval_sec: 1.0  # 视频抽帧与分类间隔（秒）；越小切分越细，但耗时越高。
+  smooth_window: 5  # 帧标签的向后滑动众数窗口；1 表示关闭平滑，值越大越抗抖但切点越滞后。
+  min_live_sec: 20  # 保留游戏正片段的最短时长（秒）；更短的连续片段会被丢弃。
+  bridge_gap_sec: 3  # 相邻正片段自动桥接合并的最大间隔（秒）；间隔内检测到回放时不会合并。
+  device: auto  # 推理设备：auto（有 CUDA 则使用）、cuda/cuda:0 或 cpu。
+  workers: 10  # 并行推理进程数；每个进程都会加载模型，GPU 显存不足时应调低至 1。

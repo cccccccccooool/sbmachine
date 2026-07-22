@@ -24,7 +24,7 @@ _MAX_RETRY_AFTER_SEC = 120.0
 
 
 def _load_secrets() -> dict:
-    """从环境变量或根目录 .env 加载通用及分域（llma/llmb/vlm）的端点配置。"""
+    """从进程环境或根目录 .env 读取发布端唯一的 Global API 配置。"""
     dotenv: dict[str, str] = {}
     env_path = _PROJECT_ROOT / ".env"
     if env_path.exists():
@@ -47,24 +47,19 @@ def _load_secrets() -> dict:
                 value = value.split(" #", 1)[0].rstrip()
             dotenv[key] = value
 
-    def env_value(name: str) -> str:
-        return os.environ[name] if name in os.environ else dotenv.get(name, "")
+    def env_value(primary: str, legacy: str) -> str:
+        """进程环境优先；仅为已有本地配置保留旧 Global 名称的读取兼容。"""
+        for name in (primary, legacy):
+            if name in os.environ:
+                return os.environ[name]
+        return dotenv.get(primary, dotenv.get(legacy, ""))
 
-    secrets: dict[str, object] = {
-        "api_key": env_value("AI6657_API_KEY"),
-        "base_url": env_value("AI6657_BASE_URL"),
-        "model": env_value("AI6657_LLM_MODEL"),
+    # 发布端只提供一套 Global OpenAI 兼容配置；Phase 3a/3b 共用它。
+    return {
+        "api_key": env_value("API_KEY", "AI6657_API_KEY"),
+        "base_url": env_value("BASE_URL", "AI6657_BASE_URL"),
+        "model": env_value("LLM_MODEL", "AI6657_LLM_MODEL"),
     }
-    for scope in ("llma", "llmb", "vlm"):
-        prefix = f"AI6657_{scope.upper()}_"
-        scoped = {
-            "api_key": env_value(prefix + "API_KEY"),
-            "base_url": env_value(prefix + "BASE_URL"),
-            "model": env_value(prefix + "MODEL"),
-        }
-        if any(scoped.values()):
-            secrets[scope] = scoped
-    return secrets
 
 
 def _is_loopback_url(base_url: str) -> bool:
@@ -94,7 +89,7 @@ def _resolve_api_key(base_url: str, api_key: str) -> str:
         return api_key
     if _is_loopback_url(base_url):
         return "EMPTY"
-    raise ValueError("API key is required; set AI6657_API_KEY or a scoped key in .env")
+    raise ValueError("API key is required; set API_KEY in .env")
 
 
 def _payload_sha256(payload: object) -> str:
@@ -310,12 +305,10 @@ def _execute_openai_chat(
 ) -> str:
     """向 OpenAI 兼容的 Chat 端点发起一次无状态请求。"""
     secrets = _load_secrets()
-    raw_scoped = secrets.get(secret_scope, {}) if secret_scope else {}
-    scoped = raw_scoped if isinstance(raw_scoped, dict) else {}
-    base_url = str(scoped.get("base_url") or secrets.get("base_url") or llm_config.get("base_url", "https://api.openai.com/v1"))
+    base_url = str(secrets.get("base_url") or llm_config.get("base_url", "https://api.openai.com/v1"))
     url = f"{base_url.rstrip('/')}/chat/completions"
-    api_key = _resolve_api_key(base_url, str(scoped.get("api_key") or secrets.get("api_key") or ""))
-    model = str(scoped.get("model") or secrets.get("model") or llm_config.get("model", "gpt-4o-mini"))
+    api_key = _resolve_api_key(base_url, str(secrets.get("api_key") or ""))
+    model = str(secrets.get("model") or llm_config.get("model", "gpt-4o-mini"))
 
     headers = {
         "Authorization": f"Bearer {api_key}",

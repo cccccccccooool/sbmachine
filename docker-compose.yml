@@ -1,27 +1,4 @@
 services:
-  vision_service:
-    image: docker.cnb.cool/cccoll-2026/ai-6657:vlm
-    build:
-      context: .
-      dockerfile: vlm/docker/vlm.Dockerfile
-    container_name: ai_6657_vision
-    ports:
-      - "23333:23333"
-    volumes:
-      - .:/workspace
-    runtime: nvidia
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    command: ["python3", "-m", "vlm.tools.vlm.simple_vlm_server"]
-
   talk_service:
     image: docker.cnb.cool/cccoll-2026/ai-6657:talk
     build:
@@ -30,7 +7,6 @@ services:
     container_name: ai_6657_talk
     ports:
       - "8000:8000"
-      - "2222:22"
     ipc: host
     runtime: nvidia
     environment:
