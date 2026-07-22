@@ -16,7 +16,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
-from sbmachine.common import require_path, resolve_backend, resolve_path
+from sbmachine.common import require_path, resolve_path, talk_component_requirement
 
 from sbmachine.phase1_preprocess_slice import run_preprocess_slice
 
@@ -43,17 +43,9 @@ def _phase3_enabled(phases: dict) -> tuple[bool, bool]:
         _phase_enabled(phases, "phase3b_semantic", "phase3_semantic", True),
     )
 
-def _phase3_active_backends(phases: dict, config: dict) -> list[str]:
-    p3a, p3b = _phase3_enabled(phases)
-    backends: list[str] = []
-    if p3a:
-        backends.append(resolve_backend(config, "analyst"))
-    if p3b:
-        backends.append(resolve_backend(config, "style"))
-    return backends
-
 def _phase3_local_service_name(phases: dict, config: dict) -> str | None:
-    return "vllm" if "vllm" in _phase3_active_backends(phases, config) else None
+    """Return the optional talk service only when an enabled role selects vLLM."""
+    return "vllm" if bool(talk_component_requirement(config)["required"]) else None
 
 def _select_preprocess_segments(slicer_segments_path: Path | None, configured_segments_path: Path | None) -> Path | None:
     if slicer_segments_path is not None and slicer_segments_path.exists():

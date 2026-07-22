@@ -5,24 +5,26 @@ services:
       context: .
       dockerfile: docker/talk.Dockerfile
     container_name: ai_6657_talk
+    profiles: ["talk"]
     ports:
       - "8000:8000"
     ipc: host
-    runtime: nvidia
+    gpus: all
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - HF_HOME=/root/.cache/huggingface
       - HUGGINGFACE_HUB_CACHE=/root/.cache/huggingface/hub
       - AI6657_HF_ENDPOINTS=${AI6657_HF_ENDPOINTS:-https://hf-mirror.com,https://huggingface.co}
+      - AI6657_TALK_MODEL=${AI6657_TALK_MODEL:-}
       - AI6657_TALK_MODELS=${AI6657_TALK_MODELS:-Qwen/Qwen3-14B-AWQ}
+      - AI6657_TALK_REVISION=${AI6657_TALK_REVISION:-}
       - AI6657_VLLM_SERVED_MODEL_NAME=${AI6657_VLLM_SERVED_MODEL_NAME:-qwen3}
       - AI6657_VLLM_MAX_MODEL_LEN=${AI6657_VLLM_MAX_MODEL_LEN:-16384}
       - AI6657_VLLM_GPU_MEMORY_UTILIZATION=${AI6657_VLLM_GPU_MEMORY_UTILIZATION:-0.90}
       - AI6657_VLLM_ARGS=${AI6657_VLLM_ARGS:-}
       - AI6657_VLLM_LORA_MODULES=${AI6657_VLLM_LORA_MODULES:-}
     volumes:
-      - .:/workspace
       - hf_cache:/root/.cache/huggingface
       - ./models/lora:/models/lora:ro
     deploy:
@@ -44,7 +46,7 @@ services:
       - "9874:9874"
     volumes:
       - .:/workspace
-    runtime: nvidia
+    gpus: all
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility

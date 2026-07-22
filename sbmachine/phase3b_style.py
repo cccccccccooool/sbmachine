@@ -109,6 +109,7 @@ def run_phase3b(
     backend = resolve_backend(config, "style")
     if backend not in {"api", "vllm"}:
         raise ValueError(f"unsupported style backend: {backend}; use vllm or api")
+    llm_cfg["_transport_backend"] = backend
     from sbmachine import llmb_api as _llmb_backend
     gen_fn = _llmb_backend.generate
     style_model = config.get("semantic", {}).get("style_model") or config.get("semantic", {}).get("model", "")

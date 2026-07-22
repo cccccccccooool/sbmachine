@@ -296,6 +296,30 @@ def _post_openai_with_retry(url: str, payload: dict, headers: dict, timeout: int
     return result
 
 
+def _resolve_chat_target(llm_config: dict) -> tuple[str, str, str]:
+    """Resolve the endpoint by the selected Phase3 backend.
+
+    API mode deliberately honours the user's Global API configuration.  Local
+    vLLM mode deliberately ignores those Global API overrides so provisioning
+    the talk add-on cannot accidentally send prompts to a remote endpoint.
+    """
+    backend = str(llm_config.get("_transport_backend") or "api").lower()
+    if backend == "vllm":
+        base_url = str(llm_config.get("base_url") or "").strip()
+        model = str(llm_config.get("model") or "").strip()
+        if not base_url:
+            raise ValueError("vllm backend requires llm.base_url")
+        if not model:
+            raise ValueError("vllm backend requires a configured model")
+        return base_url, _resolve_api_key(base_url, str(llm_config.get("api_key") or "")), model
+    if backend == "api":
+        secrets = _load_secrets()
+        base_url = str(secrets.get("base_url") or llm_config.get("base_url", "https://api.openai.com/v1"))
+        api_key = _resolve_api_key(base_url, str(secrets.get("api_key") or llm_config.get("api_key") or ""))
+        model = str(secrets.get("model") or llm_config.get("model", "gpt-4o-mini"))
+        return base_url, api_key, model
+    raise ValueError(f"unsupported LLM transport backend: {backend}; use api or vllm")
+
 def _execute_openai_chat(
     messages: list[dict],
     llm_config: dict,
@@ -304,11 +328,8 @@ def _execute_openai_chat(
     secret_scope: str | None = None,
 ) -> str:
     """向 OpenAI 兼容的 Chat 端点发起一次无状态请求。"""
-    secrets = _load_secrets()
-    base_url = str(secrets.get("base_url") or llm_config.get("base_url", "https://api.openai.com/v1"))
+    base_url, api_key, model = _resolve_chat_target(llm_config)
     url = f"{base_url.rstrip('/')}/chat/completions"
-    api_key = _resolve_api_key(base_url, str(secrets.get("api_key") or ""))
-    model = str(secrets.get("model") or llm_config.get("model", "gpt-4o-mini"))
 
     headers = {
         "Authorization": f"Bearer {api_key}",

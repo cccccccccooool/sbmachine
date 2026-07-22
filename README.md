@@ -60,32 +60,39 @@ phase4   phase4_assemble.py  → TTS + 时间戳对齐混音 → rounds_final.js
 
 ## 使用方式
 
-### 第一次使用：先选择并准备一种运行方式
+### 第一次使用：先按 Phase3 后端选择运行方式
 
-每次只选择一种运行方式：
+先在 `config/llm.yaml` 选择 `api` 或 `vllm`；`semantic.analyst_backend`、`semantic.style_backend` 可以分别覆盖它。
 
-| 运行方式 | 运行前必须准备 | 当前实现 |
+| Phase3 配置 | 是否需要 talk | 准备方式 |
 |---|---|---|
-| `local` | 本机 talk / voice 环境已经可用，且 `config/pipeline.yaml` 中的服务启动命令可运行 | 宿主机 core；按配置启动本机 talk / voice 进程 |
-| `container` | Docker、NVIDIA 容器运行时、Compose 服务镜像和模型资产已经可用 | 宿主机 core；按阶段用 Compose 启动和停止 `talk_service` / `audio_service`；当前是混合容器基线，**不是** core/talk/voice 三容器实现 |
+| 两个启用角色都是 `api` | 否 | 配置 Global `API_KEY`、`BASE_URL`、`LLM_MODEL`；发布端不会构建、拉取或启动 talk。 |
+| 任一启用角色是 `vllm` | 是 | 使用 `container` 后端，并显式安装 talk 增量包。 |
 
-`setup` 只校验现有条件并记录选择，**不**自动创建 Python 环境、不拉取 Docker 镜像，也不下载模型。
+`local` 后端仍要求用户自己准备本机 talk / voice 环境；当前发布端不自动创建这些 Python 环境。`container` 后端是宿主机 core 加按阶段启动的 talk / audio 服务，不是 core/talk/voice 三容器实现。
 
 ### 推荐顺序
 
-1. 调整 `config/` 下的输入、模型和服务配置。
-2. 在选定的运行方式中准备上表所列条件。
-3. 检查环境：
+1. 调整 `config/` 下的输入、模型和服务配置，并先决定 Phase3 使用 API 还是 vLLM。
+2. 检查环境：
 
    ```bash
-   python run.py doctor --backend local
+   python run.py doctor --backend container
    ```
 
-4. 环境就绪后记录选择：
+3. API-only：记录运行方式即可，talk 会被跳过。
 
    ```bash
-   python run.py setup --backend local
+   python run.py setup --backend container --no-download
    ```
+
+4. 任一 Phase3 角色使用 vLLM：显式构建 talk runtime 并下载该模型到 Docker 缓存卷。
+
+   ```bash
+   python run.py setup --backend container --install
+   ```
+
+   此步骤是唯一允许 talk 下载的入口；普通 `run` 只验证缓存，缺失时会报错并提示重新执行该命令，不会在流水线中暗中下载。
 
 5. 运行流水线：
 
@@ -93,8 +100,7 @@ phase4   phase4_assemble.py  → TTS + 时间戳对齐混音 → rounds_final.js
    python run.py run
    ```
 
-将命令中的 `local` 替换为 `container`，即可使用容器运行方式。`run` 只使用 `setup` 已记录的选择，绝不会暗中切换到另一种运行方式。
-
+`run` 只使用 `setup` 已记录的选择，绝不会暗中切换到另一种运行方式。
 ### 已准备环境后的兼容入口
 
 调配好 `config/` 下的相关配置后，可以在根目录下直接运行：

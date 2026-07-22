@@ -69,10 +69,12 @@ def _doctor(args: argparse.Namespace) -> tuple[int, dict[str, object]]:
 
 
 def _setup(args: argparse.Namespace) -> tuple[int, dict[str, object]]:
+    if args.install and args.no_download:
+        raise RuntimeBackendError("--install and --no-download cannot be used together")
     _, config = _load(args)
     selected, selected_by = _backend_for("setup", args, config)
     runtime = create_runtime_backend(config, selected, mock=args.mock)
-    report = runtime.setup()
+    report = runtime.setup(install=args.install)
     report["selected_by"] = selected_by
     if args.mock:
         report["state_written"] = False
@@ -124,7 +126,8 @@ def build_parser() -> argparse.ArgumentParser:
         child.add_argument("--backend", choices=("local", "container"), help="explicit runtime selection")
         child.add_argument("--mock", action="store_true", help="simulate without Docker, models, GPU, network, or state writes")
         if command == "setup":
-            child.add_argument("--no-download", action="store_true", help="accepted for explicit no-download setup scripts")
+            child.add_argument("--install", action="store_true", help="explicitly build and prepare required optional add-ons")
+            child.add_argument("--no-download", action="store_true", help="validate and record selection without package downloads")
     return parser
 
 

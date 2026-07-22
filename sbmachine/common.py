@@ -98,3 +98,43 @@ def resolve_backend(config: dict, stage: str) -> str:
     llm = config.get("llm", {}) if isinstance(config.get("llm", {}), dict) else {}
     env_name = f"AI6657_{stage.upper()}_BACKEND"
     return str(os.getenv(env_name) or semantic.get(f"{stage}_backend") or llm.get("backend") or "vllm").lower()
+
+def _phase3_role_enabled(phases: dict, key: str) -> bool:
+    """Return whether one Phase3 role is enabled, including the legacy switch."""
+    if key in phases:
+        return bool(phases[key])
+    return bool(phases.get("phase3_semantic", True))
+
+
+def phase3_backend_plan(config: dict) -> dict[str, str]:
+    """Map every enabled Phase3 role to its configured transport backend.
+
+    This is the single source of truth for deciding whether the optional local
+    vLLM/talk component is needed.  Environment overrides remain honoured via
+    :func:`resolve_backend`.
+    """
+    phases = config.get("phases", {})
+    phases = phases if isinstance(phases, dict) else {}
+    plan: dict[str, str] = {}
+    for role, phase_key in (("analyst", "phase3a_semantic"), ("style", "phase3b_semantic")):
+        if _phase3_role_enabled(phases, phase_key):
+            plan[role] = resolve_backend(config, role)
+    return plan
+
+
+def talk_component_requirement(config: dict) -> dict[str, object]:
+    """Describe whether this run needs the optional local vLLM talk add-on."""
+    plan = phase3_backend_plan(config)
+    vllm_roles = [role for role, backend in plan.items() if backend == "vllm"]
+    if vllm_roles:
+        reason = "vllm selected for enabled Phase3 role(s): " + ", ".join(vllm_roles)
+    elif plan:
+        reason = "all enabled Phase3 role(s) use API or another non-vLLM backend"
+    else:
+        reason = "no Phase3 role is enabled"
+    return {
+        "required": bool(vllm_roles),
+        "roles": vllm_roles,
+        "active_backends": plan,
+        "reason": reason,
+    }

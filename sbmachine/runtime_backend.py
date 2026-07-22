@@ -93,7 +93,9 @@ def _phase_enabled(phases: dict, key: str, legacy_key: str | None = None, defaul
 
 
 def pipeline_stage_plan(config: dict) -> list[dict[str, object]]:
-    """Describe the shared business sequence without touching a runtime."""
+    """Describe the shared sequence and the optional components it actually needs."""
+    from sbmachine.common import phase3_backend_plan
+
     phases = config.get("phases", {})
     phases = phases if isinstance(phases, dict) else {}
     core: list[str] = []
@@ -107,10 +109,12 @@ def pipeline_stage_plan(config: dict) -> list[dict[str, object]]:
         core.append("phase2")
 
     talk: list[str] = []
-    if _phase_enabled(phases, "phase3a_semantic", "phase3_semantic"):
-        talk.append("phase3a")
-    if _phase_enabled(phases, "phase3b_semantic", "phase3_semantic"):
-        talk.append("phase3b")
+    phase3_plan = phase3_backend_plan(config)
+    for role, stage in (("analyst", "phase3a"), ("style", "phase3b")):
+        backend = phase3_plan.get(role)
+        if backend is None:
+            continue
+        (talk if backend == "vllm" else core).append(stage)
 
     voice: list[str] = []
     if _phase_enabled(phases, "phase4_assemble", None):
@@ -121,7 +125,6 @@ def pipeline_stage_plan(config: dict) -> list[dict[str, object]]:
         for component, stage_names in (("core", core), ("talk", talk), ("voice", voice))
         if stage_names
     ]
-
 
 def verify_bundled_models() -> dict[str, object]:
     """Validate release-bundled core weights without contacting any registry."""
@@ -189,18 +192,54 @@ class RuntimeBackend(ABC):
     def doctor(self) -> dict[str, object]:
         """Inspect only; do not download, start services, or alter state."""
 
-    def setup(self) -> dict[str, object]:
-        """Validate the selected backend.  Dependency downloads stay explicit."""
+    def provision_talk(self) -> dict[str, object]:
+        """Install the optional talk component when this runtime supports it."""
+        raise RuntimeBackendError(
+            f"{self.name} cannot provision the talk add-on; prepare its local vLLM environment manually"
+        )
+
+    def setup(self, *, install: bool = False) -> dict[str, object]:
+        """Validate the runtime and explicitly install talk only when requested."""
+        from sbmachine.common import talk_component_requirement
+
+        requirement = talk_component_requirement(self.config)
         report = dict(self.doctor())
+        actions = ["validated existing runtime prerequisites only"]
+        downloads_requested = False
+        if bool(requirement["required"]):
+            if install:
+                addon = self.provision_talk()
+                report = dict(self.doctor())
+                report["talk_addon"] = addon
+                actions.append("installed the required optional talk add-on")
+                downloads_requested = True
+            else:
+                report.setdefault(
+                    "talk_addon",
+                    {
+                        "required": True,
+                        "ready": False,
+                        "detail": "run python run.py setup --backend container --install to prepare talk",
+                    },
+                )
+                actions.append("talk add-on is required but was not installed")
+        else:
+            report["talk_addon"] = {
+                "required": False,
+                "ready": True,
+                "detail": "not required by the active API-only Phase3 configuration",
+            }
+            actions.append("skipped talk add-on because active Phase3 roles do not use vLLM")
         report.update(
             {
                 "action": "setup",
-                "downloads_performed": False,
-                "setup_actions": ["validated existing runtime prerequisites only"],
+                "talk_requirement": requirement,
+                "downloads_requested": downloads_requested,
+                "downloads_performed": downloads_requested,
+                "setup_actions": actions,
             }
         )
         return report
-
     def prepare_runtime(self, *, enable_talk: bool, enable_voice: bool, phase3_service: str | None) -> None:
         if self.one_model_at_a_time:
             return
@@ -289,42 +328,61 @@ class LocalRuntimeBackend(RuntimeBackend):
         raise RuntimeBackendError(f"unknown local component: {component}")
 
     def doctor(self) -> dict[str, object]:
+        from sbmachine.common import talk_component_requirement
+
         services = self.runtime.get("services", {})
         services = services if isinstance(services, dict) else {}
+        phases = self.config.get("phases", {})
+        phases = phases if isinstance(phases, dict) else {}
+        talk_requirement = talk_component_requirement(self.config)
+        voice_required = _phase_enabled(phases, "phase4_assemble", None)
         checks: list[dict[str, object]] = [
             {"name": "python", "ok": bool(sys.executable), "detail": sys.executable},
         ]
         checks.append(verify_bundled_models())
-        ready = bool(checks[-1]["ok"] )
-        for name in ("vllm", "sovits"):
+        ready = bool(checks[-1]["ok"])
+
+        def require_service(name: str) -> None:
+            nonlocal ready
             service = services.get(name, {})
             service = service if isinstance(service, dict) else {}
-            if not service.get("enabled", True):
-                continue
+            enabled = bool(service.get("enabled", True))
+            checks.append({"name": f"{name}_enabled", "ok": enabled, "detail": "required by the active pipeline"})
+            ready = ready and enabled
+            if not enabled:
+                return
             command = str(service.get("start", "")).strip()
             command_ok = bool(command)
             checks.append({"name": f"{name}_start_command", "ok": command_ok, "detail": command})
             ready = ready and command_ok
             if command.startswith("bash"):
                 bash_ok = shutil.which("bash") is not None
-                checks.append({"name": "bash", "ok": bash_ok, "detail": "required by configured start command"})
+                checks.append({"name": f"{name}_bash", "ok": bash_ok, "detail": "required by configured start command"})
                 ready = ready and bash_ok
             if "/opt/GPT-SoVITS" in command:
                 sovits_root = Path("/opt/GPT-SoVITS")
                 root_ok = sovits_root.is_dir()
                 checks.append({"name": "gpt_sovits_root", "ok": root_ok, "detail": str(sovits_root)})
                 ready = ready and root_ok
+
+        if bool(talk_requirement["required"]):
+            require_service("vllm")
+        else:
+            checks.append({"name": "talk_addon", "ok": True, "detail": "not required by the active API-only Phase3 configuration"})
+        if voice_required:
+            require_service("sovits")
         return {
             "action": "doctor",
             "backend": self.name,
             "ready": ready,
             "checks": checks,
+            "talk_requirement": talk_requirement,
             "downloads_performed": False,
             "limitations": [
                 "local uses the configured service commands; this release does not create Python environments",
+                "local talk installation is not automated; API-only Phase3 does not require it",
             ],
         }
-
     def start_component(self, component: str, *, phase3_service: str | None = None) -> None:
         service = self._service_name(component, phase3_service)
         if service is None or component in self._started:
@@ -368,29 +426,74 @@ class ContainerRuntimeBackend(RuntimeBackend):
         raise RuntimeBackendError(f"unknown container component: {component}")
 
     def doctor(self) -> dict[str, object]:
-        from sbmachine.common import PROJECT_ROOT
+        from sbmachine.common import PROJECT_ROOT, talk_component_requirement
 
         compose_path = Path(self._compose_file)
         if not compose_path.is_absolute():
             compose_path = PROJECT_ROOT / compose_path
+        phases = self.config.get("phases", {})
+        phases = phases if isinstance(phases, dict) else {}
+        talk_requirement = talk_component_requirement(self.config)
+        voice_required = _phase_enabled(phases, "phase4_assemble", None)
+        services_required = bool(talk_requirement["required"]) or voice_required
+        checks: list[dict[str, object]] = [verify_bundled_models()]
         docker = shutil.which("docker")
-        checks = [
-            {"name": "docker", "ok": docker is not None, "detail": docker or "not found"},
-            {"name": "compose_file", "ok": compose_path.is_file(), "detail": str(compose_path)},
-        ]
-        checks.append(verify_bundled_models())
+        if services_required:
+            checks.extend(
+                [
+                    {"name": "docker", "ok": docker is not None, "detail": docker or "not found"},
+                    {"name": "compose_file", "ok": compose_path.is_file(), "detail": str(compose_path)},
+                ]
+            )
+        else:
+            checks.append({"name": "container_services", "ok": True, "detail": "no Compose service is required by active phases"})
+
+        if bool(talk_requirement["required"]):
+            if docker is not None and compose_path.is_file():
+                try:
+                    talk_addon = self._manager_or_create().talk_addon_status(verify=True)
+                except RuntimeError as exc:
+                    talk_addon = {"required": True, "ready": False, "detail": str(exc)}
+            else:
+                talk_addon = {
+                    "required": True,
+                    "ready": False,
+                    "detail": "Docker and the Compose file are required before talk can be installed",
+                }
+            checks.append({"name": "talk_addon", "ok": bool(talk_addon.get("ready")), "detail": str(talk_addon.get("detail", ""))})
+        else:
+            talk_addon = {
+                "required": False,
+                "ready": True,
+                "detail": "not required by the active API-only Phase3 configuration",
+            }
+            checks.append({"name": "talk_addon", "ok": True, "detail": str(talk_addon["detail"])})
+
         return {
             "action": "doctor",
             "backend": self.name,
             "ready": all(bool(check["ok"]) for check in checks),
             "checks": checks,
+            "talk_requirement": talk_requirement,
+            "talk_addon": talk_addon,
             "downloads_performed": False,
             "limitations": [
                 "current container backend keeps core on the host and containers only talk/voice",
-                "Docker daemon, NVIDIA runtime, image availability, and model availability are verified when a real run starts",
+                "talk is an explicit vLLM add-on; run setup --install to build it and prepare its model cache",
             ],
         }
 
+    def provision_talk(self) -> dict[str, object]:
+        from sbmachine.common import talk_component_requirement
+
+        requirement = talk_component_requirement(self.config)
+        if not bool(requirement["required"]):
+            return {
+                "required": False,
+                "ready": True,
+                "detail": "not required by the active API-only Phase3 configuration",
+            }
+        return self._manager_or_create().install_talk()
     def start_component(self, component: str, *, phase3_service: str | None = None) -> None:
         service = self._service_name(component, phase3_service)
         if service is None or component in self._started:
@@ -415,26 +518,38 @@ class MockRuntimeBackend(RuntimeBackend):
         self.events: list[dict[str, object]] = []
 
     def doctor(self) -> dict[str, object]:
+        from sbmachine.common import talk_component_requirement
+
+        requirement = talk_component_requirement(self.config)
         return {
             "action": "doctor",
             "backend": self.name,
             "ready": True,
             "simulated": True,
             "checks": [{"name": "mock_runtime", "ok": True, "detail": "no process, network, Docker, GPU, or model access"}],
+            "talk_requirement": requirement,
+            "talk_addon": {
+                "required": bool(requirement["required"]),
+                "ready": True,
+                "detail": "simulated; no talk runtime is touched",
+            },
             "downloads_performed": False,
             "writes_performed": False,
         }
 
-    def setup(self) -> dict[str, object]:
+    def setup(self, *, install: bool = False) -> dict[str, object]:
         report = self.doctor()
+        required = bool(report["talk_requirement"]["required"])
         report.update(
             {
                 "action": "setup",
-                "setup_actions": ["simulated backend selection only"],
+                "downloads_requested": False,
+                "setup_actions": [
+                    "simulated optional talk installation" if install and required else "simulated backend selection only"
+                ],
             }
         )
         return report
-
     def start_component(self, component: str, *, phase3_service: str | None = None) -> None:
         if component not in self._started:
             self._mark_started(component, phase3_service)

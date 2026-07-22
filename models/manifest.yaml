@@ -32,14 +32,22 @@ external:
   - model_id: talk-model
     role: talk.phase3
     backend: vllm
+    addon: true
     bundled: false
+    required_when: at least one enabled Phase3 role selects backend vllm
     configured_by:
-      - AI6657_TALK_MODELS
+      - AI6657_TALK_MODEL
+      - AI6657_TALK_MODELS  # legacy fallback
+      - AI6657_TALK_REVISION
       - AI6657_VLLM_SERVED_MODEL_NAME
       - config/llm.yaml
-    delivery: downloaded or mounted by the selected runtime; do not bake model weights into the release image
+    runtime:
+      compose_service: talk_service
+      image: docker.cnb.cool/cccoll-2026/ai-6657:talk
+      cache_volume: hf_cache
+      install_command: python run.py setup --backend container --install
+    delivery: optional add-on; API-only users neither build its vLLM runtime nor download its model. The explicit install command builds the runtime and prepares the configured model cache; normal run never downloads it implicitly.
     licence: confirm the selected upstream model licence before use or redistribution
-
   - model_id: gpt-sovits-voice
     role: voice.phase4
     backend: gpt-sovits

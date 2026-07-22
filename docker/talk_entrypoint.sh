@@ -7,44 +7,111 @@ SERVED_NAME="${AI6657_VLLM_SERVED_MODEL_NAME:-qwen3}"
 HOST="${AI6657_VLLM_HOST:-0.0.0.0}"
 PORT="${AI6657_VLLM_PORT:-8000}"
 MODEL_ID="${AI6657_TALK_MODEL:-${AI6657_TALK_MODELS:-Qwen/Qwen3-14B-AWQ}}"
+MODEL_REVISION="${AI6657_TALK_REVISION:-}"
 HF_ENDPOINTS="${AI6657_HF_ENDPOINTS:-https://hf-mirror.com,https://huggingface.co}"
+READY_DIR="${HF_HOME}/ai6657-talk-ready"
 
-# ── Model download ──────────────────────────────────────────────────────────
+model_key() {
+  python3 - "$MODEL_ID" "$MODEL_REVISION" <<'PY'
+import hashlib
+import sys
+print(hashlib.sha256((sys.argv[1] + "@" + sys.argv[2]).encode("utf-8")).hexdigest())
+PY
+}
 
-download_model() {
-  if python3 -c "
-from huggingface_hub import try_to_load_from_cache
-path = try_to_load_from_cache('${MODEL_ID}', 'config.json')
-print(path or '')
-exit(0 if path else 1)
-" 2>/dev/null; then
-    echo "[talk] model ${MODEL_ID} already in HF cache, skip download"
+READY_MARKER="${READY_DIR}/$(model_key).json"
+
+snapshot_is_available() {
+  python3 - "$MODEL_ID" "$MODEL_REVISION" <<'PY'
+import sys
+from huggingface_hub import snapshot_download
+
+model_id, revision = sys.argv[1:]
+kwargs = {"repo_id": model_id, "local_files_only": True}
+if revision:
+    kwargs["revision"] = revision
+try:
+    print(snapshot_download(**kwargs))
+except Exception:
+    raise SystemExit(1)
+PY
+}
+
+marker_matches() {
+  python3 - "$READY_MARKER" "$MODEL_ID" "$MODEL_REVISION" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path, model_id, revision = map(str, sys.argv[1:])
+try:
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if payload == {"model_id": model_id, "revision": revision} else 1)
+PY
+}
+
+write_marker() {
+  mkdir -p "$READY_DIR"
+  python3 - "$READY_MARKER" "$MODEL_ID" "$MODEL_REVISION" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path, model_id, revision = map(str, sys.argv[1:])
+Path(path).write_text(json.dumps({"model_id": model_id, "revision": revision}) + "\n", encoding="utf-8")
+PY
+}
+
+verify_model() {
+  if ! marker_matches; then
+    echo "[talk] model ${MODEL_ID} is not prepared; run python run.py setup --backend container --install" >&2
+    return 1
+  fi
+  if ! snapshot_is_available >/dev/null; then
+    echo "[talk] model cache for ${MODEL_ID} is incomplete; rerun python run.py setup --backend container --install" >&2
+    return 1
+  fi
+  echo "[talk] verified prepared model ${MODEL_ID}"
+}
+
+prepare_model() {
+  mkdir -p "$HF_HOME"
+  if marker_matches && snapshot_is_available >/dev/null; then
+    echo "[talk] model ${MODEL_ID} is already prepared"
     return 0
   fi
 
-  IFS=',' read -r -a ENDPOINT_ARRAY <<< "$HF_ENDPOINTS"
-  for endpoint in "${ENDPOINT_ARRAY[@]}"; do
-    echo "[talk] downloading ${MODEL_ID} from ${endpoint} ..."
-    if HF_ENDPOINT="$endpoint" hf download "$MODEL_ID" 2>&1; then
-      echo "[talk] download complete: ${MODEL_ID}"
-      return 0
+  IFS=',' read -r -a endpoints <<< "$HF_ENDPOINTS"
+  for endpoint in "${endpoints[@]}"; do
+    echo "[talk] preparing ${MODEL_ID} from ${endpoint} ..."
+    args=(download "$MODEL_ID")
+    if [[ -n "$MODEL_REVISION" ]]; then
+      args+=(--revision "$MODEL_REVISION")
     fi
-    echo "[talk] download failed from ${endpoint}, trying next..." >&2
+    if HF_ENDPOINT="$endpoint" hf "${args[@]}"; then
+      if snapshot_is_available >/dev/null; then
+        write_marker
+        echo "[talk] model preparation complete: ${MODEL_ID}"
+        return 0
+      fi
+      echo "[talk] download completed but the local cache did not verify" >&2
+    fi
+    echo "[talk] preparation failed from ${endpoint}, trying next..." >&2
   done
   return 1
 }
 
-# ── vLLM launch ─────────────────────────────────────────────────────────────
-
 append_extra_args() {
   if [[ -n "${AI6657_VLLM_ARGS:-}" ]]; then
-    read -r -a EXTRA <<< "${AI6657_VLLM_ARGS}"
-    VLLM_ARGS+=("${EXTRA[@]}")
+    read -r -a extra <<< "${AI6657_VLLM_ARGS}"
+    VLLM_ARGS+=("${extra[@]}")
   fi
   if [[ -n "${AI6657_VLLM_LORA_MODULES:-}" ]]; then
     VLLM_ARGS+=(--enable-lora --lora-modules)
-    read -r -a LORAS <<< "${AI6657_VLLM_LORA_MODULES}"
-    VLLM_ARGS+=("${LORAS[@]}")
+    read -r -a loras <<< "${AI6657_VLLM_LORA_MODULES}"
+    VLLM_ARGS+=("${loras[@]}")
   fi
 }
 
@@ -57,7 +124,6 @@ launch_model() {
     --trust-remote-code
     --max-model-len "${AI6657_VLLM_MAX_MODEL_LEN:-16384}"
     --gpu-memory-utilization "${AI6657_VLLM_GPU_MEMORY_UTILIZATION:-0.90}"
-    # Qwen3 思考默认开启，从 chat template 层关闭，content 才是干净 JSON
     --reasoning-parser qwen3
     --default-chat-template-kwargs '{"enable_thinking": false}'
   )
@@ -70,21 +136,18 @@ launch_model() {
   exec python3 -m vllm.entrypoints.openai.api_server "${VLLM_ARGS[@]}"
 }
 
-# ── main ────────────────────────────────────────────────────────────────────
-
-mkdir -p "$HF_HOME"
-
-MAX_ATTEMPTS="${AI6657_VLLM_MAX_ATTEMPTS:-2}"
-for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
-  echo "[talk] attempt ${attempt}/${MAX_ATTEMPTS}: ${MODEL_ID}"
-  if download_model; then
+case "${1:-serve}" in
+  prepare)
+    prepare_model
+    ;;
+  verify)
+    verify_model
+    ;;
+  serve|"")
+    verify_model
     launch_model
-  fi
-  if [[ $attempt -lt $MAX_ATTEMPTS ]]; then
-    echo "[talk] retrying in 10s..." >&2
-    sleep 10
-  fi
-done
-
-echo "[talk] ${MODEL_ID} could not be served after ${MAX_ATTEMPTS} attempts." >&2
-exit 1
+    ;;
+  *)
+    exec "$@"
+    ;;
+esac

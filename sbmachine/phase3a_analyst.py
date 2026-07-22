@@ -168,6 +168,7 @@ def run_phase3a(
     backend = resolve_backend(config, "analyst")
     if backend not in {"api", "vllm"}:
         raise ValueError(f"unsupported analyst backend: {backend}; use vllm or api")
+    llm_cfg["_transport_backend"] = backend
     from sbmachine import llma_api as _llma_backend
     gen_fn = _llma_backend.generate
 

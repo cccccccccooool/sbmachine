@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from sbmachine.common import talk_component_requirement
 from sbmachine.runtime_backend import create_runtime_backend, resolve_runtime_backend
 from sbmachine.pipeline_interface import select_pipeline_interface
 from sbmachine.run_context import RunContext
@@ -89,3 +90,77 @@ def test_cleanup_remembers_talk_service_identity():
     runtime.cleanup()
 
     assert manager.calls == [("start", "vllm"), ("stop", "vllm")]
+
+def _api_phase3_config(backend: str = "container") -> dict:
+    config = _config(backend)
+    config["llm"] = {"backend": "api"}
+    config["semantic"] = {"analyst_backend": "api", "style_backend": "api"}
+    return config
+
+
+def test_api_only_phase3_does_not_require_or_simulate_talk(monkeypatch):
+    monkeypatch.delenv("AI6657_ANALYST_BACKEND", raising=False)
+    monkeypatch.delenv("AI6657_STYLE_BACKEND", raising=False)
+    config = _api_phase3_config()
+
+    requirement = talk_component_requirement(config)
+    assert requirement["required"] is False
+    assert requirement["roles"] == []
+
+    runtime = create_runtime_backend(config, mock=True)
+    report = runtime.doctor()
+    plan = runtime.simulate_pipeline()
+    setup = runtime.setup(install=True)
+
+    assert report["talk_addon"]["required"] is False
+    assert all(event["component"] != "talk" for event in plan["events"])
+    assert plan["stages"][0] == {
+        "component": "core",
+        "phases": ["demo_parse", "video_marking", "phase1", "phase2", "phase3a", "phase3b"],
+    }
+    assert setup["downloads_performed"] is False
+    assert setup["setup_actions"] == ["simulated backend selection only"]
+
+
+def test_mixed_phase3_backends_only_assign_vllm_role_to_talk(monkeypatch):
+    monkeypatch.delenv("AI6657_ANALYST_BACKEND", raising=False)
+    monkeypatch.delenv("AI6657_STYLE_BACKEND", raising=False)
+    config = _api_phase3_config()
+    config["semantic"]["style_backend"] = "vllm"
+
+    requirement = talk_component_requirement(config)
+    plan = create_runtime_backend(config, mock=True).simulate_pipeline()
+
+    assert requirement["required"] is True
+    assert requirement["roles"] == ["style"]
+    assert {item["component"]: item["phases"] for item in plan["stages"]}["talk"] == ["phase3b"]
+    assert "phase3a" in {item["component"]: item["phases"] for item in plan["stages"]}["core"]
+
+
+def test_api_only_doctors_do_not_check_local_vllm_or_docker(monkeypatch):
+    monkeypatch.delenv("AI6657_ANALYST_BACKEND", raising=False)
+    monkeypatch.delenv("AI6657_STYLE_BACKEND", raising=False)
+    config = _api_phase3_config("local")
+    config["phases"]["phase4_assemble"] = False
+
+    local_report = create_runtime_backend(config, "local").doctor()
+    container_report = create_runtime_backend(config, "container").doctor()
+    local_check_names = {str(check["name"]) for check in local_report["checks"]}
+    container_check_names = {str(check["name"]) for check in container_report["checks"]}
+
+    assert local_report["ready"] is True
+    assert "vllm_start_command" not in local_check_names
+    assert "talk_addon" in local_check_names
+    assert container_report["ready"] is True
+    assert "docker" not in container_check_names
+    assert container_report["talk_addon"]["required"] is False
+
+
+def test_mock_vllm_install_is_explicit_but_never_downloads(monkeypatch):
+    monkeypatch.delenv("AI6657_ANALYST_BACKEND", raising=False)
+    monkeypatch.delenv("AI6657_STYLE_BACKEND", raising=False)
+    report = create_runtime_backend(_config("container"), mock=True).setup(install=True)
+
+    assert report["talk_requirement"]["required"] is True
+    assert report["setup_actions"] == ["simulated optional talk installation"]
+    assert report["downloads_performed"] is False
