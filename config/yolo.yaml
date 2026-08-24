@@ -1,0 +1,69 @@
+# ============================================================
+# Phase2 视觉配置（时间轴对齐 + HUD YOLO + OCR）
+# 坐标均为归一化 0~1；模型路径相对项目根目录。
+# ============================================================
+yolo:
+  crop_padding_px: 4     # OCR 裁剪外扩像素
+
+  # ── HUD YOLO 检测 ──
+  yolo:
+    enabled: true                # 是否启用 HUD YOLO 检测
+    model_path:                  # HUD YOLO 权重（.pt/.onnx）；启用时必填
+    classes_file: data/vision/yolo_background/default/classes.json  # 类别定义文件
+    conf_threshold: 0.35         # 检测置信度阈值（0~1）
+    white_frame_mean_threshold: 245  # 画面均值超过此值判为白屏/闪光帧
+    skip_labels: [flash]         # 这些标签不参与 gate 判定
+
+  # ── 导播视角名字 OCR（POV）──
+  pov_ocr:
+    enabled: true                # 是否启用 POV 名字 OCR
+    box: "0.42,0.90,0.58,0.97"   # 回退识别区域（x1,y1,x2,y2）；生产用 YOLO 定位
+    min_match_score: 0.6         # OCR 结果与 demo 名单最低匹配分
+    min_confidence: 0.35         # OCR 置信度低于此不绑定
+    early_accept_confidence: 0.75  # 置信度达到此值即停止增强识别
+    white_saturation_max: 60     # 候选白字的 HSV 最大饱和度
+    white_value_min: 220         # 候选白字的 HSV 最小明度
+    white_ratio_threshold: 0.01  # 白像素占比达到此值才调 OCR
+    spectator_min_frames: 3      # 连续 N 帧无可靠姓名后切导播视角
+
+  # ── 计时器 OCR（HUD 剩余时间）──
+  timer_ocr:
+    enabled: false               # 是否启用
+    box: "0.46,0.00,0.54,0.06"   # 回退识别区域（归一化）
+    min_confidence: 0.35         # 置信度阈值
+    lock_min_samples: 3          # 锁定最少样本数（一般不用改）
+    degraded_burst_frames: 5     # 降级突发帧数（一般不用改）
+    residual_tolerance_sec: 2.0  # 残差容差（秒）
+    max_drift_ratio: 0.05        # 最大漂移比
+    reset_low_sec: 10.0          # 读数低于此秒数触发重置
+    reset_high_sec: 100.0        # 读数高于此秒数触发重置
+    reset_confirm_samples: 3     # 重置需连续确认次数
+
+  # ── 比分 OCR ──
+  score_ocr:
+    enabled: false               # 是否启用
+    box: ""                      # 识别区域（归一化）；只消费两个单侧比分框
+    min_confidence: 0.35         # 置信度阈值
+    max_observed_value: 30       # 比分最大观测值
+    consensus_frames: 5          # 达成共识所需帧数
+    reset_confirm_frames: 3      # 重置需连续确认帧数
+
+  # ── C4 视觉判定 ──
+  c4_visual:
+    window_frames: 3             # 判定窗口帧数
+    min_present_frames: 2        # 至少出现帧数
+
+  # ── 时间轴对齐 ──
+  align:
+    duration_gap_penalty: 8.0    # 时长差异过大的罚分
+    onset_tolerance_sec: 0.5     # onset 匹配容差（秒）
+    veto_threshold: 0.25         # 匹配分低于此值降低对齐置信度
+
+  # ── 采样节奏 ──
+  sampling:
+    phase2_interval_sec: 1.0     # HUD YOLO 采样间隔（秒）
+    alignment_initial_sec: 10.0  # 开局连续 OCR 时长（秒）
+    alignment_period_sec: 20.0   # 开局后周期 OCR 间隔（秒）
+    alignment_window_sec: 5.0    # 每周期内执行 OCR 的窗口（秒）
+    alignment_ocr_budget_ratio: 1.0          # OCR 预算占比（一般不用改）
+    alignment_degraded_extra_ratio: 0.2      # 降级时额外预算占比（一般不用改）

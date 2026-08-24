@@ -1,27 +1,111 @@
+# ============================================================
+# 模型 / LLM 配置
+# 模型端点与密钥在根目录 .env 配置（云端 AI6657_CLOUD_* / 本地 AI6657_LOCAL_*），
+# 本文件只调整调用行为、并发与采样参数。
+# backend 取值：api=云端 OpenAI 兼容 API | vllm=本地回环（vLLM）
+# ============================================================
+
+# ── 通用 LLM 调用 ──
 llm:
-  backend: vllm              # 通用 LLM 后端：vllm 或 api。
-  base_url: http://127.0.0.1:8000/v1  # OpenAI 兼容聊天接口地址。
+  backend: api             # 默认后端：api（云端）| vllm（本地）
+  temperature: 0.75        # 采样温度；越高越发散
+  timeout_sec: 60          # 单次请求超时（秒）
+  num_ctx: 16384           # 上下文窗口上限（token）
+  frequency_penalty: 0.3   # 重复 token 惩罚
 
-  temperature: 0.75  # 通用采样温度；越高越发散。
-  timeout_sec: 300  # 单次 LLM 请求超时（秒）。
-  num_ctx: 16384  # 上下文窗口上限（token）。
-  enable_thinking: false  # 是否请求模型输出思考过程；正式稿通常关闭。
-  frequency_penalty: 0.3  # 重复 token 惩罚。
-
+# ── Phase3 语义（分析 / 风格化）──
 semantic:
-  model: qwen3  # 兼容旧调用的默认语义模型名。
-  analyst_backend: vllm  # Phase3a 分析后端：vllm 或 api。
-  style_backend: vllm  # Phase3b 风格化后端：vllm 或 api。
-  analyst_model: qwen3  # Phase3a 使用的 served-model 名称。
-  style_model: qwen3  # Phase3b 使用的 served-model/LoRA 名称。
-  analyst_concurrent_rounds: 1  # 同时处理的回合数；受显存和服务吞吐限制。
-  analyst_max_tokens: 256  # Phase3a 单窗口最大输出 token 数。
-  analyst_temperature: 0.3  # Phase3a 采样温度。
-  analyst_repeat_penalty: 1.3  # Phase3a 重复内容惩罚。
-  analyst_top_p: 0.9  # Phase3a nucleus sampling 截断值。
+  analyst_backend: api     # Phase3a 分析后端：api | vllm
+  style_backend: api       # Phase3b 风格化后端：api | vllm
+  analyst_concurrent_rounds: 5   # 回合级并发；本地 vllm 改 1（显存受限）
+  analyst_window_concurrency: 7  # 窗口级并发；1=串行，本地 vllm 改 1
+  style_concurrent_scenes: 6     # 场景级并发；1=串行，本地 vllm 改 1
+  analyst_request_interval_sec: 1.0  # Phase3a 请求最小间隔（秒；仅本地回环生效）
+  style_request_interval_sec: 1.0    # Phase3b 请求最小间隔（秒）
+  analyst_output_max_tokens: 512      # Phase3a 本地单次输出上限（token）
+  cloud_analyst_max_tokens: 2048      # 云端整回合输出预算（兼容旧键）
+  cloud_analyst_output_max_tokens: 16384  # 云端 3a 输出上限（=num_ctx，reasoning 不截断）
+  analyst_temperature: 0.1    # Phase3a 采样温度（低=事实稳定）
+  analyst_repeat_penalty: 1.0 # Phase3a 重复惩罚（靠事实去重，不用惩罚）
+  analyst_top_p: 0.9          # Phase3a nucleus 截断值
+  style_temperature: 0.55     # Phase3b 采样温度
+  style_top_p: 0.85           # Phase3b nucleus 截断值
+  style_frequency_penalty: 0.2  # Phase3b 重复惩罚
+  style_output_max_tokens: 1024  # Phase3b 本地输出上限（含 JSON 包壳与口播）
+  cloud_style_output_max_tokens: 16384  # 云端 3b 输出上限
+  style_max_retries: 3        # 验收失败最大重试次数
+  style_recent_window_count: 12  # 跨回合保留的风格残余窗口数
+  style_phrase_max_reuse: 2    # 相同长短语整场最多复用次数
+  style_budget_hard_tolerance: 0.5   # 旧预算弹性（legacy 兼容口径，读取时钳制 0~0.5）
+  style_output_hard_cap_factor: 1.5  # LLM-B 输出硬线上限因子（钳制 1.0~1.5，不可放大）
+  style_empty_window_threshold: 0.30 # 空回合阈值：required 窗口失败占比超过它即判空
+  style_k_enabled: false       # Phase3b K 配额：true=max(2, 3%×窗口数)
+  exchange_cluster_gap_sec: 4.0  # 交换聚类间隔（秒）
 
-  window_max_sec: 10  # Phase3 语义窗口最大长度（秒）。
-  window_min_sec: 3  # Phase3 语义窗口最小长度（秒）。
+  # Phase3c / LLM-C（独立润色阶段）
+  phase3c:
+    mode: "optional"          # 模式：off | shadow | optional | required（off=不调 C 仅封装 B）
+    contract_version: 2       # 包合同版本：1=legacy | 2=execution-ready
+    temperature: 0.6          # LLM-C 采样温度
+    max_retries: 2            # C 验收失败最大重试次数
+    render_timebase_fps: 30   # render_slot tick 换算基准（fps）
 
+  recovery:                   # 可恢复错误重试
+    enabled: true             # true=可恢复错误自动重试
+    max_retries: 3            # 首次调用外最多重试次数
+
+  # 语速 / 字数预算
+  speech_rate:
+    base_char_per_sec: 5.0    # 基准语速（字/秒）
+    char_budget_factor:       # 各情绪档位字数预算系数（越小=语速越慢）
+      平述: 0.95
+      激动: 1.1
+      惊叹: 0.88
+
+  window_max_sec: 10   # 语义窗口最大长度（秒）
+  window_min_sec: 3    # 语义窗口最小长度（秒）
+
+  # Phase3a 中性稿生成方式
+  phase3a_generator:
+    mode: legacy_llma     # rule_template=不调 LLM-A | legacy_llma=走 LLM-A
+    tiny:
+      enabled: false      # 是否用小模型生成中性稿
+      shadow_only: true   # true=只对比不发布
+      model_path: models/qwen2.5-0.5b-instruct
+      backend: llama_cpp
+      max_retries: 1
+      fallback_to_template: true  # 失败时回退模板
+
+  # 配音任务单（commentary v3 稀疏候选 + 惰性 TTS）
+  voice_task:
+    enabled: false            # 是否启用配音任务单
+    contract_version: 1       # 任务单合同版本
+    candidate_policy: sparse_v1  # 候选策略
+    max_candidates_per_scene: 3  # 每场景最多候选
+    speech_profile_id: speech-profile-v1
+    require_validated_profile: true  # 是否要求已校验语音 profile
+    max_speed_factor: 1.5     # 语速上限因子
+
+  # 云端特化层（仅云端生效；本地 vllm 无影响）
+  cloud_analyst_conversation_max_rounds: 0  # 3a 会话历史上限（轮）；0=无会话（无状态可并发）
+  cloud_conversation_max_rounds: 6          # 3b 会话历史上限（轮）；0=禁用
+  cloud_conversation_max_tokens: 0          # 会话输入 token 上限；0=不限
+  cloud_token_budget_enabled: false         # 成本护栏总开关：true=按预算限流
+  cloud_token_budget_per_match: 0           # 每场 token 总预算；0=动态计算
+  cloud_token_budget_factor: 2.0            # 动态预算 = 窗口数 × 单窗均值 × factor
+  cloud_total_timeout_sec: 600              # 单请求 SSE 硬时限（秒）；0=不启用
+  cloud_request_concurrency: 6              # 请求并发上限；0=不限制
+  cloud_queue_timeout_sec: 120              # 并发排队等待上限（秒）
+  cloud_cache_enabled: true                 # 成功响应缓存：true=缓存，false=直连
+  cloud_cache_dir: output/cloud_cache/{run_id}  # 缓存目录（支持 {run_id} 占位）
+  cloud_source_rounds_sha256: ""            # 外部 source_rounds 哈希覆盖；""=自动跟踪
+  cloud_cache_pending_ttl_sec: 86400        # pending 缓存惰性清理 TTL（秒）
+
+  # Phase3a 可解释压缩（shadow rollout）
+  # 取值：audit_only（只记账不改稿）| claims_shadow（新旧并排比较，不发布）| enabled（压缩成为唯一规则计划）
+  compression_mode: audit_only
+  compression_ledger_enabled: true   # true=写压缩台账 JSONL 到 diagnostics
+
+# ── 其它 ──
 paths:
-  style_skill: Prompt/skill/style_skill.md  # Phase3b 风格技能文件。
+  style_skill: Prompt/skill/style_skill.md  # Phase3b 风格技能文件

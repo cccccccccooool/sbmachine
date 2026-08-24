@@ -10,15 +10,20 @@ from sbmachine.phase3a_cloud_prompt import cloud_response_format
 
 def generate_cloud_round(prompt: str, llm_cfg: dict, *, system_prompt: str, max_tokens: int, log_ctx: dict | None = None) -> str:
     secrets = llm_shim._load_secrets()
-    base_url = str(secrets.get("base_url") or llm_cfg.get("base_url", "https://api.openai.com/v1"))
-    api_key = llm_shim._resolve_api_key(base_url, str(secrets.get("api_key") or ""))
-    model = str(secrets.get("model") or llm_cfg.get("model", "gpt-4o-mini"))
+    scoped = secrets.get("llma", {}) if isinstance(secrets.get("llma"), dict) else {}
+    base_url = str(scoped.get("base_url") or secrets.get("base_url") or llm_cfg.get("base_url") or "")
+    if not base_url:
+        raise ValueError("LLM base_url is not configured; set BASE_URL (or AI6657_CLOUD_BASE_URL) in .env")
+    api_key = llm_shim._resolve_api_key(base_url, str(scoped.get("api_key") or secrets.get("api_key") or ""))
+    model = str(scoped.get("model") or secrets.get("model") or llm_cfg.get("model") or "")
+    if not model:
+        raise ValueError("LLM model is not configured; set MODEL (or AI6657_CLOUD_MODEL) in .env")
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}]
     payload = {
         "model": model,
         "messages": messages,
         "temperature": float(llm_cfg.get("temperature", 0.2)),
-        "max_tokens": int(max_tokens),
+        "max_tokens": int(max_tokens) * 10,  # S6 前保持 ×10 兜底；cloud 路径独立于 Phase3a
         "response_format": cloud_response_format(),
     }
     if llm_cfg.get("top_p") is not None:
