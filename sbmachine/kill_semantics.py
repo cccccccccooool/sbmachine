@@ -42,19 +42,19 @@ def _collateral(kills: list[dict], cfg: dict) -> bool:
     """判定是否为一枪穿杀：同一武器、几乎同一 tick、两名受害者近似在同一条射线上。"""
     if len(kills) != 2:
         return False
-    a, b = kills[0], kills[1]
-    if _normalize_weapon(a.get("weapon")) != _normalize_weapon(b.get("weapon")):
+    first_kill, second_kill = kills[0], kills[1]
+    if _normalize_weapon(first_kill.get("weapon")) != _normalize_weapon(second_kill.get("weapon")):
         return False
     try:
         # 两次击杀必须近乎同时发生，否则不可能是同一颗子弹穿过。
-        if abs(int(a["event_tick"]) - int(b["event_tick"])) > int(
+        if abs(int(first_kill["event_tick"]) - int(second_kill["event_tick"])) > int(
             cfg["collateral_tick_tolerance"]
         ):
             return False
         origin, first_victim, second_victim = (
-            a["attacker_pos"],
-            a["victim_pos"],
-            b["victim_pos"],
+            first_kill["attacker_pos"],
+            first_kill["victim_pos"],
+            second_kill["victim_pos"],
         )
         if not origin or not first_victim or not second_victim:
             return False
@@ -77,7 +77,7 @@ def _ammo_trace(
     frames: list[dict], name: str, lo: float, hi: float, weapon: str
 ) -> list[int]:
     """在 [lo, hi] 时间窗内，按时间顺序收集某玩家该武器的弹药变化序列（去掉连续重复值）。"""
-    trace: list[int] = []
+    ammo_trace: list[int] = []
     for frame in sorted(frames, key=frame_time):
         if not lo <= frame_time(frame) <= hi:
             continue
@@ -91,9 +91,9 @@ def _ammo_trace(
             except (TypeError, ValueError):
                 continue
             # 只记录数值发生变化的采样点，避免同一弹药数被重复写入。
-            if not trace or trace[-1] != ammo:
-                trace.append(ammo)
-    return trace
+            if not ammo_trace or ammo_trace[-1] != ammo:
+                ammo_trace.append(ammo)
+    return ammo_trace
 
 
 def _spray_transfer(
@@ -102,11 +102,11 @@ def _spray_transfer(
     """判定是否为一次扫射转火：同一把自动武器连续击杀，中途大幅甩枪转向且弹药持续下降。"""
     if len(kills) < int(cfg["spray_transfer_min_kills"]):
         return False
-    times = [float(kill.get("event_time", 0.0)) for kill in kills]
+    kill_times = [float(kill.get("event_time", 0.0)) for kill in kills]
     # 相邻击杀间隔过大就不是一梭子打完的连续压制。
     if any(
-        times[index] - times[index - 1] > float(cfg["spray_transfer_max_kill_gap_sec"])
-        for index in range(1, len(times))
+        kill_times[index] - kill_times[index - 1] > float(cfg["spray_transfer_max_kill_gap_sec"])
+        for index in range(1, len(kill_times))
     ):
         return False
     weapon = _normalize_weapon(kills[0].get("weapon"))
@@ -120,16 +120,16 @@ def _spray_transfer(
     if not origin or any(not pos for pos in positions):
         return False
     # 相邻受害者相对射手的夹角，代表这一梭子里的甩枪幅度。
-    turns = [
+    angle_turns = [
         _angle_between(
             _planar_vector(origin, positions[i - 1]),
             _planar_vector(origin, positions[i]),
         )
         for i in range(1, len(positions))
     ]
-    if not turns or max(turns) < float(cfg["spray_transfer_min_angle_deg"]):
+    if not angle_turns or max(angle_turns) < float(cfg["spray_transfer_min_angle_deg"]):
         return False
-    trace = _ammo_trace(
+    ammo_trace = _ammo_trace(
         frames,
         str(kills[0].get("attacker", "")),
         float(kills[0].get("event_time", 0)) - 1.0,
@@ -137,9 +137,9 @@ def _spray_transfer(
         str(kills[0].get("weapon", "")),
     )
     # 弹药必须单调不增（没换弹/没停火），且总消耗达到阈值，才能证明是一梭子连续扫过来的。
-    if len(trace) < 2 or any(trace[i] > trace[i - 1] for i in range(1, len(trace))):
+    if len(ammo_trace) < 2 or any(ammo_trace[i] > ammo_trace[i - 1] for i in range(1, len(ammo_trace))):
         return False
-    return trace[0] - trace[-1] >= int(cfg["spray_transfer_min_ammo_drop"])
+    return ammo_trace[0] - ammo_trace[-1] >= int(cfg["spray_transfer_min_ammo_drop"])
 
 
 def build_kill_topics(

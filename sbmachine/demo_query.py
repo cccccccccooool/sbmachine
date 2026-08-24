@@ -191,12 +191,12 @@ class DemoQuery:
 
     @property
     def capabilities(self) -> dict[str, bool]:
-        raw = self.meta.get("capabilities")
-        if not isinstance(raw, dict):
+        capabilities_data = self.meta.get("capabilities")
+        if not isinstance(capabilities_data, dict):
             return {}
         return {
             str(key): bool(value)
-            for key, value in raw.items()
+            for key, value in capabilities_data.items()
             if isinstance(key, str) and isinstance(value, bool)
         }
 
@@ -216,29 +216,29 @@ class DemoQuery:
         return cached[1]
 
     def match_player(self, ocr_name: str) -> PlayerMatch:
-        target = _normalize_name(ocr_name)
-        if len(target) < 2:
+        normalized_target = _normalize_name(ocr_name)
+        if len(normalized_target) < 2:
             return PlayerMatch("", "", 0.0)
-        best = PlayerMatch("", "", 0.0)
-        for steamid, name, candidate in self._normalized_roster():
-            if not candidate:
+        best_match = PlayerMatch("", "", 0.0)
+        for steamid, name, candidate_name in self._normalized_roster():
+            if not candidate_name:
                 continue
-            score = SequenceMatcher(None, target, candidate).ratio()
-            if target in candidate or candidate in target:
+            score = SequenceMatcher(None, normalized_target, candidate_name).ratio()
+            if normalized_target in candidate_name or candidate_name in normalized_target:
                 score = max(score, 0.9)
-            if score > best.score:
-                best = PlayerMatch(steamid, name, float(score))
-        return best
+            if score > best_match.score:
+                best_match = PlayerMatch(steamid, name, float(score))
+        return best_match
 
     def round_by_no(self, round_no: int) -> dict:
         cached = self._round_index
         if cached is None or cached[0] is not self.rounds:
-            index: dict[int, dict] = {}
-            for item in self.rounds:
-                key = int(item.get("round_no", 0))
-                if key not in index:   # 重复 round_no 保留第一个，复刻原线性扫描语义
-                    index[key] = item
-            self._round_index = (self.rounds, index)
+            round_index: dict[int, dict] = {}
+            for round_data in self.rounds:
+                current_round_no = int(round_data.get("round_no", 0))
+                if current_round_no not in round_index:  # 重复 round_no 保留第一个，复刻原线性扫描语义
+                    round_index[current_round_no] = round_data
+            self._round_index = (self.rounds, round_index)
             cached = self._round_index
         try:
             return cached[1][int(round_no)]
@@ -265,7 +265,7 @@ class DemoQuery:
         self._ensure_ticks()
         if self._ticks_df is None or not self._tick_values:
             return []
-        target = int(tick)
+        target_tick = int(tick)
         current_round = int(round_no)
         self.round_by_no(current_round)
         round_ticks = self._tick_values_by_round.get(current_round, [])
@@ -276,20 +276,20 @@ class DemoQuery:
         max_distance = int(max_distance_ticks)
         if max_distance < 0:
             raise ValueError("max_distance_ticks must be non-negative")
-        pos = bisect.bisect_left(round_ticks, target)
-        candidates = []
-        if pos > 0:
-            candidates.append(round_ticks[pos - 1])
-        if pos < len(round_ticks):
-            candidates.append(round_ticks[pos])
-        nearest = min(candidates, key=lambda value: abs(value - target)) if candidates else target
-        if abs(nearest - target) > max_distance:
+        insertion_point = bisect.bisect_left(round_ticks, target_tick)
+        candidate_ticks = []
+        if insertion_point > 0:
+            candidate_ticks.append(round_ticks[insertion_point - 1])
+        if insertion_point < len(round_ticks):
+            candidate_ticks.append(round_ticks[insertion_point])
+        nearest_tick = min(candidate_ticks, key=lambda value: abs(value - target_tick)) if candidate_ticks else target_tick
+        if abs(nearest_tick - target_tick) > max_distance:
             return []
-        rows = self._ticks_df[
+        matching_rows = self._ticks_df[
             (self._ticks_df["round_no"] == current_round)
-            & (self._ticks_df["tick"] == nearest)
+            & (self._ticks_df["tick"] == nearest_tick)
         ]
-        return [self._row_to_dict(row) for _, row in rows.iterrows()]
+        return [self._row_to_dict(row) for _, row in matching_rows.iterrows()]
 
     def kills_between(self, tick_a: int, tick_b: int) -> list[dict]:
         lo, hi = sorted((int(tick_a), int(tick_b)))
@@ -301,15 +301,15 @@ class DemoQuery:
     def utilities_between(self, tick_a: int, tick_b: int) -> list[dict]:
         """返回 [tick_a, tick_b] 区间内投掷或爆开的道具事件(来自 grenades.json)。"""
         lo, hi = sorted((int(tick_a), int(tick_b)))
-        result = []
-        for g in self.grenades:
-            throw = g.get("throw_tick")
-            det = g.get("det_tick")
-            if throw is not None and lo <= int(throw) <= hi:
-                result.append({**g, "_event": "throw"})
-            elif det is not None and lo <= int(det) <= hi:
-                result.append({**g, "_event": "detonate"})
-        return result
+        utility_events = []
+        for grenade in self.grenades:
+            throw_tick = grenade.get("throw_tick")
+            detonate_tick = grenade.get("det_tick")
+            if throw_tick is not None and lo <= int(throw_tick) <= hi:
+                utility_events.append({**grenade, "_event": "throw"})
+            elif detonate_tick is not None and lo <= int(detonate_tick) <= hi:
+                utility_events.append({**grenade, "_event": "detonate"})
+        return utility_events
 
     def utility_throws_between(self, tick_a: int, tick_b: int) -> list[dict]:
         """返回稳定最小投影；同一 grenades.json 记录永远只产生一条 throw。"""
@@ -341,17 +341,17 @@ class DemoQuery:
 
     def damages_between(self, tick_a: int, tick_b: int) -> list[dict]:
         lo, hi = sorted((int(tick_a), int(tick_b)))
-        return [d for d in self.damages if lo < int(d.get("tick", -1)) <= hi]
+        return [damage for damage in self.damages if lo < int(damage.get("tick", -1)) <= hi]
 
     def smokes_in_round(self, round_no: int) -> list[dict]:
-        return [s for s in self.smokes if int(s.get("round_no", 0)) == int(round_no)]
+        return [smoke for smoke in self.smokes if int(smoke.get("round_no", 0)) == int(round_no)]
 
     def smokes_active_at(self, tick: int) -> list[dict]:
         """返回在给定 tick 处仍处于活动状态（已生成、尚未消散）的烟雾。"""
         return self._active_at(self.smokes, "_smoke_tree", tick)
 
     def infernos_in_round(self, round_no: int) -> list[dict]:
-        return [i for i in self.infernos if int(i.get("round_no", 0)) == int(round_no)]
+        return [inferno for inferno in self.infernos if int(inferno.get("round_no", 0)) == int(round_no)]
 
     def infernos_active_at(self, tick: int) -> list[dict]:
         """返回在给定 tick 处仍在燃烧的火焰。"""
@@ -381,7 +381,7 @@ class DemoQuery:
 
     def flashes_between(self, tick_a: int, tick_b: int) -> list[dict]:
         lo, hi = sorted((int(tick_a), int(tick_b)))
-        return [f for f in self.flashes if lo < int(f.get("tick", -1)) <= hi]
+        return [flash for flash in self.flashes if lo < int(flash.get("tick", -1)) <= hi]
 
     def weapon_fires_between(self, tick_a: int, tick_b: int) -> list[dict]:
         lo, hi = sorted((int(tick_a), int(tick_b)))
@@ -425,10 +425,10 @@ class DemoQuery:
 
     def _read_required_json(self, name: str, expected_type: type) -> Any:
         path = self.parsed_dir / name
-        val = read_json(path)
-        if not isinstance(val, expected_type):
+        loaded_data = read_json(path)
+        if not isinstance(loaded_data, expected_type):
             raise ValueError(f"{name} must contain a {expected_type.__name__}")
-        return val
+        return loaded_data
 
     def _read_optional_json(self, name: str, capability: str) -> list[dict]:
         """只读取 manifest 已校验的增量文件；能力已声明但文件缺失时拒绝降级。"""
@@ -454,30 +454,30 @@ class DemoQuery:
         except ImportError as exc:
             raise RuntimeError("DemoQuery.state_at requires pandas") from exc
         if "ticks.parquet" in manifest_files:
-            df = pd.read_parquet(parquet_path)
+            dataframe = pd.read_parquet(parquet_path)
         elif "ticks.jsonl" in manifest_files:
-            rows = [json.loads(line) for line in jsonl_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-            df = pd.DataFrame(rows)
+            tick_rows = [json.loads(line) for line in jsonl_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            dataframe = pd.DataFrame(tick_rows)
         else:
             raise ValueError("validated demo manifest has no tick artifact")
-        if "tick" in df.columns and not df.empty:
-            if "round_no" not in df.columns:
+        if "tick" in dataframe.columns and not dataframe.empty:
+            if "round_no" not in dataframe.columns:
                 raise ValueError("tick artifact is missing round_no")
-            df = df.copy()
-            df["tick"] = df["tick"].astype(int)
-            df["round_no"] = df["round_no"].astype(int)
-            self._tick_values = sorted(int(v) for v in df["tick"].drop_duplicates().tolist())
-            for round_no, rows in df.groupby("round_no"):
+            dataframe = dataframe.copy()
+            dataframe["tick"] = dataframe["tick"].astype(int)
+            dataframe["round_no"] = dataframe["round_no"].astype(int)
+            self._tick_values = sorted(int(value) for value in dataframe["tick"].drop_duplicates().tolist())
+            for round_no, round_rows in dataframe.groupby("round_no"):
                 self._tick_values_by_round[int(round_no)] = sorted(
-                    int(value) for value in rows["tick"].drop_duplicates().tolist()
+                    int(value) for value in round_rows["tick"].drop_duplicates().tolist()
                 )
-        self._ticks_df = df
+        self._ticks_df = dataframe
 
     @staticmethod
     def _row_to_dict(row: Any) -> dict:
-        out = {}
+        row_data = {}
         for key, value in row.to_dict().items():
             if hasattr(value, "item"):
                 value = value.item()
-            out[key] = value
-        return out
+            row_data[key] = value
+        return row_data

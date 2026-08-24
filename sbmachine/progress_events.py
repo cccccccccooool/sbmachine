@@ -87,15 +87,15 @@ class ProgressEventWriter:
         detail: str | None = None,
     ) -> bool:
         try:
-            candidate = ProgressEvent(
+            event_record = ProgressEvent(
                 self.run_id, self._sequence + 1, event, stage, completed, total, unit, detail
             )
-            line = json.dumps(candidate.to_mapping(), ensure_ascii=False, separators=(",", ":"))
+            line = json.dumps(event_record.to_mapping(), ensure_ascii=False, separators=(",", ":"))
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("a", encoding="utf-8", newline="\n") as stream:
                 stream.write(line + "\n")
                 stream.flush()
-            self._sequence = candidate.sequence
+            self._sequence = event_record.sequence
             return True
         except Exception:
             return False
@@ -137,23 +137,23 @@ class ProgressEventReader:
             return []
         lines = text.split("\n")
         self._tail = lines.pop()
-        accepted: list[ProgressEvent] = []
+        accepted_events: list[ProgressEvent] = []
         for line in lines:
             if not line.strip():
                 continue
             self.summary["events_received"] += 1
             try:
-                event = ProgressEvent.from_mapping(json.loads(line))
+                parsed_event = ProgressEvent.from_mapping(json.loads(line))
             except (ValueError, TypeError, json.JSONDecodeError):
                 self.summary["invalid_json"] += 1
                 continue
-            if event.run_id != self.run_id:
+            if parsed_event.run_id != self.run_id:
                 self.summary["wrong_run_id"] += 1
                 continue
-            if event.sequence <= self._last_sequence:
+            if parsed_event.sequence <= self._last_sequence:
                 self.summary["out_of_order"] += 1
                 continue
-            self._last_sequence = event.sequence
+            self._last_sequence = parsed_event.sequence
             self.summary["events_accepted"] += 1
-            accepted.append(event)
-        return accepted
+            accepted_events.append(parsed_event)
+        return accepted_events

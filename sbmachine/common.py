@@ -104,8 +104,8 @@ def load_hype_rules() -> dict:
     """加载 Prompt/json/hype_rules.json，结果模块级缓存（进程内单例）。"""
     global _HYPE_RULES_CACHE
     if _HYPE_RULES_CACHE is None:
-        path = PROJECT_ROOT / "Prompt" / "json" / "hype_rules.json"
-        _HYPE_RULES_CACHE = json.loads(path.read_text(encoding="utf-8"))
+        rules_path = PROJECT_ROOT / "Prompt" / "json" / "hype_rules.json"
+        _HYPE_RULES_CACHE = json.loads(rules_path.read_text(encoding="utf-8"))
     return _HYPE_RULES_CACHE
 
 
@@ -113,16 +113,16 @@ def load_cs_game_rules() -> dict:
     """加载 Phase3 的确定性 CS2 规则，热路径只读一次。"""
     global _CS_GAME_RULES_CACHE
     if _CS_GAME_RULES_CACHE is None:
-        path = PROJECT_ROOT / "Prompt" / "json" / "cs_game_rules.json"
-        _CS_GAME_RULES_CACHE = json.loads(path.read_text(encoding="utf-8"))
+        rules_path = PROJECT_ROOT / "Prompt" / "json" / "cs_game_rules.json"
+        _CS_GAME_RULES_CACHE = json.loads(rules_path.read_text(encoding="utf-8"))
     return _CS_GAME_RULES_CACHE
 
 
 def _output_cap(llm_config: dict, max_tokens: int | None) -> int | None:
     """输出 token 上限：显式参数 > 配置 max_tokens > 无上限(None)。
-    封死失控生成（思考链/复读跑满 num_ctx 撞超时）——同时治速度和输出端爆上下文。"""
-    cap = int(max_tokens or llm_config.get("max_tokens", 0) or 0)
-    return cap if cap > 0 else None
+    限制失控生成（思考链/复读跑满 num_ctx 撞超时），同时避免输出端超出上下文。"""
+    output_cap = int(max_tokens or llm_config.get("max_tokens", 0) or 0)
+    return output_cap if output_cap > 0 else None
 
 
 def debug_output_dir(run_id: str) -> Path:
@@ -132,10 +132,10 @@ def debug_output_dir(run_id: str) -> Path:
 
 def resolve_backend(config: dict, stage: str) -> str:
     """解析某阶段的后端：环境变量 > semantic 分阶段配置 > llm.backend > 默认 vllm。"""
-    semantic = config.get("semantic", {}) if isinstance(config.get("semantic", {}), dict) else {}
-    llm = config.get("llm", {}) if isinstance(config.get("llm", {}), dict) else {}
+    semantic_config = config.get("semantic", {}) if isinstance(config.get("semantic", {}), dict) else {}
+    llm_config = config.get("llm", {}) if isinstance(config.get("llm", {}), dict) else {}
     env_name = f"AI6657_{stage.upper()}_BACKEND"
-    return str(os.getenv(env_name) or semantic.get(f"{stage}_backend") or llm.get("backend") or "vllm").lower()
+    return str(os.getenv(env_name) or semantic_config.get(f"{stage}_backend") or llm_config.get("backend") or "vllm").lower()
 
 
 _SPOKEN_LATIN_RE = re.compile(r"[A-Za-z0-9]+")

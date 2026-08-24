@@ -27,11 +27,11 @@ def _run_ffmpeg(args: list[str]) -> None:
 def _probe_media(path: Path) -> tuple[bool, float]:
     from sbmachine.media_probe import probe_media
 
-    result = probe_media(path)
-    duration = result.get("duration_sec")
-    if not isinstance(duration, (int, float)) or not math.isfinite(float(duration)) or float(duration) <= 0:
-        raise RuntimeError(f"invalid video duration {duration!r}: {path}")
-    return bool(result.get("has_audio")), float(duration)
+    media_info = probe_media(path)
+    duration_sec = media_info.get("duration_sec")
+    if not isinstance(duration_sec, (int, float)) or not math.isfinite(float(duration_sec)) or float(duration_sec) <= 0:
+        raise RuntimeError(f"invalid video duration {duration_sec!r}: {path}")
+    return bool(media_info.get("has_audio")), float(duration_sec)
 
 
 def _mux_round_video(
@@ -47,8 +47,8 @@ def _mux_round_video(
     因此对两路音频都做 apad 补齐再 atrim 到画面时长。
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    has_game_audio, duration = _probe_media(clip_path)
-    duration_arg = f"{duration:.6f}"
+    has_game_audio, video_duration = _probe_media(clip_path)
+    duration_arg = f"{video_duration:.6f}"
     if has_game_audio:
         audio_filter = (
             f"[0:a:0]volume={game_vol},apad,atrim=duration={duration_arg}[bg];"
@@ -195,7 +195,7 @@ def assemble_scene_canvas_v2(
         raise ValueError("strict canvas sample rate must be positive")
 
     params: wave._wave_params | None = None
-    loaded: list[tuple[dict, bytes, int, wave._wave_params]] = []
+    loaded_scenes: list[tuple[dict, bytes, int, wave._wave_params]] = []
     for index, scene in enumerate(scenes):
         if not isinstance(scene, dict):
             raise ValueError(f"strict canvas scene[{index}] must be an object")
@@ -210,7 +210,7 @@ def assemble_scene_canvas_v2(
             raise RuntimeError(f"strict canvas WAV format mismatch: {audio_path}")
         with wave.open(str(audio_path), "rb") as wav:
             frames = wav.readframes(frame_count)
-        loaded.append((scene, frames, frame_count, current_params))
+        loaded_scenes.append((scene, frames, frame_count, current_params))
 
     if params is None:
         sample_rate = int(default_sample_rate)
@@ -243,8 +243,8 @@ def assemble_scene_canvas_v2(
     bytes_per_frame = params.nchannels * params.sampwidth
     silence_byte = b"\x80" if params.sampwidth == 1 else b"\x00"
     canvas = bytearray(silence_byte * bytes_per_frame * canvas_frames)
-    result_units: list[dict] = []
-    for index, (scene, frames, frame_count, current_params) in enumerate(loaded):
+    rendered_units: list[dict] = []
+    for index, (scene, frames, frame_count, current_params) in enumerate(loaded_scenes):
         try:
             slot_start_sec = float(scene["slot_start_sec"])
             slot_end_sec = float(scene["slot_end_sec"])
@@ -262,7 +262,7 @@ def assemble_scene_canvas_v2(
         timeline_end_sample = timeline_start_sample + frame_count
         slot_timeline_end_sample = seconds_to_sample(slot_end_sec, sample_rate, timeline_origin_sec=timeline_origin_sec)
         timeline_canvas_end_sample = seconds_to_sample(round_end_sec, sample_rate, timeline_origin_sec=timeline_origin_sec)
-        result_units.append({
+        rendered_units.append({
             "unit_id": scene.get("unit_id"),
             "asset_start_frame": 0,
             "asset_end_frame": frame_count,
@@ -286,6 +286,6 @@ def assemble_scene_canvas_v2(
     return {
         "sample_rate": sample_rate,
         "round_canvas_limit_sample": canvas_frames,
-        "units": result_units,
+        "units": rendered_units,
     }
 

@@ -85,12 +85,12 @@ class MatchConversation:
     def messages(self, system_prompt: str | None, current_user: str) -> list[dict]:
         with self._lock:
             history = list(self.rounds)
-        msgs = [{"role": "system", "content": system_prompt or ""}]
+        messages = [{"role": "system", "content": system_prompt or ""}]
         for entry in history:
-            msgs.append({"role": "user", "content": entry["user"]})
-            msgs.append({"role": "assistant", "content": entry["assistant"]})
-        msgs.append({"role": "user", "content": current_user})
-        return msgs
+            messages.append({"role": "user", "content": entry["user"]})
+            messages.append({"role": "assistant", "content": entry["assistant"]})
+        messages.append({"role": "user", "content": current_user})
+        return messages
 
     def add_round(self, user: str, assistant: str, log_ctx: dict | None) -> None:
         if self.max_rounds <= 0:
@@ -329,18 +329,18 @@ def make_generate(secret_scope: str, semantic_cfg: dict | None = None) -> Callab
             ]
         else:
             messages = conversation.messages(system_prompt, prompt)
-        cap = _output_cap(effective_cfg, max_tokens)
-        raw = _execute_openai_chat(
+        output_cap = _output_cap(effective_cfg, max_tokens)
+        api_result = _execute_openai_chat(
             messages,
             effective_cfg,
-            max_tokens=cap,
+            max_tokens=output_cap,
             log_ctx=log_ctx,
             secret_scope=scope,
             response_format=response_format,
         )
         if conversation is not None:
-            conversation.record_usage(getattr(raw, "usage", None), log_ctx)
-        return raw
+            conversation.record_usage(getattr(api_result, "usage", None), log_ctx)
+        return api_result
 
     if cache_enabled:
         _set_cache_tracking(True)

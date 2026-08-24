@@ -32,7 +32,10 @@ def has_empty_rounds(commentary_manifest: dict[str, Any]) -> bool:
     rounds = commentary_manifest.get("rounds") if isinstance(commentary_manifest, dict) else None
     if not isinstance(rounds, list):
         return False
-    return any(isinstance(r, dict) and r.get("status") == "empty" for r in rounds)
+    return any(
+        isinstance(round_data, dict) and round_data.get("status") == "empty"
+        for round_data in rounds
+    )
 
 
 def _default_prompt(manifest: dict[str, Any]) -> str:
@@ -58,11 +61,11 @@ def decide_empty_rounds(
         return "continue"
     readline = prompt or input
     try:
-        raw = readline(_default_prompt(manifest=commentary_manifest)).strip().lower()
+        action_input = readline(_default_prompt(manifest=commentary_manifest)).strip().lower()
     except (EOFError, KeyboardInterrupt):
         return "continue"
-    if raw in _VALID_ACTIONS:
-        return raw
+    if action_input in _VALID_ACTIONS:
+        return action_input
     # 兼容单字母/数字快捷输入
     shortcuts = {"c": "continue", "r": "retry", "x": "cancel", "1": "continue", "2": "retry", "3": "cancel"}
-    return shortcuts.get(raw, "continue")
+    return shortcuts.get(action_input, "continue")

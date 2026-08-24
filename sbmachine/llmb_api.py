@@ -25,19 +25,23 @@ STYLE_DEFAULTS = {
 def style_runtime_config(config: dict) -> tuple[dict, dict]:
     """读取 Phase3b 专属采样/验收配置；旧配置使用明确默认值。"""
     llm_cfg = dict(config.get("llm", {}) if isinstance(config.get("llm"), dict) else {})
-    semantic = config.get("semantic", {}) if isinstance(config.get("semantic"), dict) else {}
-    effective = {key: semantic.get(key, default) for key, default in STYLE_DEFAULTS.items()}
+    semantic_config = config.get("semantic", {}) if isinstance(config.get("semantic"), dict) else {}
+    effective_config = {
+        key: semantic_config.get(key, default) for key, default in STYLE_DEFAULTS.items()
+    }
     # 云端特化键不在 STYLE_DEFAULTS 中，需单独透传，否则 phase3b 云端 max_tokens 放开失效。
-    if semantic.get("cloud_style_output_max_tokens"):
-        effective["cloud_style_output_max_tokens"] = int(semantic["cloud_style_output_max_tokens"])
+    if semantic_config.get("cloud_style_output_max_tokens"):
+        effective_config["cloud_style_output_max_tokens"] = int(
+            semantic_config["cloud_style_output_max_tokens"]
+        )
     llm_cfg.update({
-        "temperature": float(effective["style_temperature"]),
-        "top_p": float(effective["style_top_p"]),
-        "frequency_penalty": float(effective["style_frequency_penalty"]),
+        "temperature": float(effective_config["style_temperature"]),
+        "top_p": float(effective_config["style_top_p"]),
+        "frequency_penalty": float(effective_config["style_frequency_penalty"]),
     })
-    if semantic.get("style_request_interval_sec"):
-        llm_cfg["request_interval_sec"] = float(semantic["style_request_interval_sec"])
-    return llm_cfg, effective
+    if semantic_config.get("style_request_interval_sec"):
+        llm_cfg["request_interval_sec"] = float(semantic_config["style_request_interval_sec"])
+    return llm_cfg, effective_config
 
 
 def _ctx_hint(log_ctx: dict | None) -> str:
@@ -56,10 +60,10 @@ def _ctx_hint(log_ctx: dict | None) -> str:
 def load_style_skill(config: dict) -> str:
     """从配置里读取解说风格 skill 文件内容，缺失时返回空串。"""
     skill_path = (config.get("paths", {}) or {}).get("style_skill")
-    path = resolve_path(skill_path, base=PROJECT_ROOT)
-    if path is None or not Path(path).exists():
+    resolved_skill_path = resolve_path(skill_path, base=PROJECT_ROOT)
+    if resolved_skill_path is None or not Path(resolved_skill_path).exists():
         return ""
-    return Path(path).read_text(encoding="utf-8").strip()
+    return Path(resolved_skill_path).read_text(encoding="utf-8").strip()
 
 
 def generate(
@@ -71,7 +75,7 @@ def generate(
     response_format: dict | None = None,
 ) -> str:
     """向 Phase 3b 的 OpenAI 兼容后端发起一次生成请求。"""
-    cap = _output_cap(llm_cfg, max_tokens)
+    output_cap = _output_cap(llm_cfg, max_tokens)
     timeout = int(llm_cfg.get("timeout_sec", 120))
     if os.getenv("AI6657_DEBUG_PHASE3"):
         print(f"  >> [LLM API] 正在请求 api 后端{_ctx_hint(log_ctx)}... (timeout: {timeout}s)", flush=True)
@@ -79,5 +83,11 @@ def generate(
         {"role": "system", "content": system_prompt or ""},
         {"role": "user", "content": prompt},
     ]
-    return _execute_openai_chat(messages, llm_cfg, max_tokens=cap, log_ctx=log_ctx, secret_scope="llmb",
-                                response_format=response_format)
+    return _execute_openai_chat(
+        messages,
+        llm_cfg,
+        max_tokens=output_cap,
+        log_ctx=log_ctx,
+        secret_scope="llmb",
+        response_format=response_format,
+    )

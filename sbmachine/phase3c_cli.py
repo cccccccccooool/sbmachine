@@ -37,30 +37,30 @@ def main() -> int:
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report["config_valid"] else 2
 
-    writer = (
+    event_writer = (
         ProgressEventWriter(Path(args.progress_events), run_id=args.progress_run_id)
         if args.progress_events and args.progress_run_id else None
     )
     def progress_sink(completed, total, unit, detail):
-        if writer is not None:
-            writer.emit(event="stage_progress", stage="phase3c", completed=completed, total=total, unit=unit, detail=detail)
+        if event_writer is not None:
+            event_writer.emit(event="stage_progress", stage="phase3c", completed=completed, total=total, unit=unit, detail=detail)
 
-    draft = require_path(paths.get("llmb_draft_package_json", "output/sbmachine/llmb_draft_package.json"), "paths.llmb_draft_package_json")
-    output = require_path(paths.get("commentary_render_package_json", "output/sbmachine/commentary_render_package.json"), "paths.commentary_render_package_json")
-    require_debug_output(output, "paths.commentary_render_package_json")
-    if output.exists():
-        output.unlink()
+    draft_path = require_path(paths.get("llmb_draft_package_json", "output/sbmachine/llmb_draft_package.json"), "paths.llmb_draft_package_json")
+    output_path = require_path(paths.get("commentary_render_package_json", "output/sbmachine/commentary_render_package.json"), "paths.commentary_render_package_json")
+    require_debug_output(output_path, "paths.commentary_render_package_json")
+    if output_path.exists():
+        output_path.unlink()
 
-    result = run_phase3c(
-        draft_package_path=draft,
-        output_render_path=output,
+    phase3c_result = run_phase3c(
+        draft_package_path=draft_path,
+        output_render_path=output_path,
         config_path=config_path,
         progress_sink=progress_sink,
     )
-    if writer is not None:
-        writer.emit(event="stage_work_complete", stage="phase3c")
-    require_outputs("phase3c", [output])
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if event_writer is not None:
+        event_writer.emit(event="stage_work_complete", stage="phase3c")
+    require_outputs("phase3c", [output_path])
+    print(json.dumps(phase3c_result, ensure_ascii=False, indent=2))
     print("[phase3c_cli] done")
     return 0
 

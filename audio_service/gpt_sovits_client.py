@@ -5,8 +5,8 @@
 启动方式：被 sbmachine/phase4_assemble.py 的 run_phase4() 导入调用；也可独立运行（python audio_service/gpt_sovits_client.py --text ... --output ...）。
 输入数据流：解说文本字符串和 GPT-SoVITS 运行时配置（YAML）。
 输出数据流：写入 WAV 音频文件到指定路径。
-用法用途：通过 synthesize() 合成普通语音，通过 synthesize_emotional() 按情绪分段合成并拼接，
-通过 set_weights() 切换模型权重，通过 _concat_audio/_concat_wav_stdlib 拼接多段音频。
+调用方式：通过 synthesize() 合成普通语音，通过 synthesize_emotional() 按情绪分段合成并拼接，
+通过 set_weights() 切换模型权重。
 """
 from __future__ import annotations
 
@@ -41,14 +41,14 @@ def resolve_path(value: str | Path) -> Path:
 
 
 def read_config(path: Path) -> dict:
-    with path.open("r", encoding="utf-8") as file:
-        return yaml.safe_load(file) or {}
+    with path.open("r", encoding="utf-8") as config_file:
+        return yaml.safe_load(config_file) or {}
 
 
-def _api_url(config: dict) -> str:
-    api_config = config.get("api", {})
-    host = os.getenv("GPT_SOVITS_API_HOST") or api_config.get("host", "127.0.0.1")
-    port = int(os.getenv("GPT_SOVITS_API_PORT") or api_config.get("port", 9880))
+def _resolve_api_url(config: dict) -> str:
+    api_settings = config.get("api", {})
+    host = os.getenv("GPT_SOVITS_API_HOST") or api_settings.get("host", "127.0.0.1")
+    port = int(os.getenv("GPT_SOVITS_API_PORT") or api_settings.get("port", 9880))
     return f"http://{host}:{port}"
 
 
@@ -56,10 +56,18 @@ def set_weights(api_url: str, gpt_weights: str, sovits_weights: str) -> None:
     gpt_weights = os.getenv("GPT_SOVITS_GPT_WEIGHTS") or gpt_weights
     sovits_weights = os.getenv("GPT_SOVITS_SOVITS_WEIGHTS") or sovits_weights
     if gpt_weights:
-        response = requests.get(f"{api_url}/set_gpt_weights", params={"weights_path": gpt_weights}, timeout=60)
+        response = requests.get(
+            f"{api_url}/set_gpt_weights",
+            params={"weights_path": gpt_weights},
+            timeout=60,
+        )
         response.raise_for_status()
     if sovits_weights:
-        response = requests.get(f"{api_url}/set_sovits_weights", params={"weights_path": sovits_weights}, timeout=60)
+        response = requests.get(
+            f"{api_url}/set_sovits_weights",
+            params={"weights_path": sovits_weights},
+            timeout=60,
+        )
         response.raise_for_status()
 
 
@@ -74,13 +82,20 @@ def _emotion_speed_factors() -> dict[str, float]:
         return {}
 
 
-def _tts_payload(text: str, ref: dict, media_type: str = "wav", speed_factor: float = 1.0) -> dict:
+def _build_tts_payload(
+    text: str,
+    reference: dict,
+    media_type: str = "wav",
+    speed_factor: float = 1.0,
+) -> dict:
     return {
         "text": text,
-        "text_lang": ref.get("text_lang", ref.get("prompt_lang", "zh")),
-        "ref_audio_path": str(resolve_path(ref.get("audio_path", "data/voice/reference/6657_ref.wav"))),
-        "prompt_text": ref.get("prompt_text", ""),
-        "prompt_lang": ref.get("prompt_lang", "zh"),
+        "text_lang": reference.get("text_lang", reference.get("prompt_lang", "zh")),
+        "ref_audio_path": str(
+            resolve_path(reference.get("audio_path", "data/voice/reference/6657_ref.wav"))
+        ),
+        "prompt_text": reference.get("prompt_text", ""),
+        "prompt_lang": reference.get("prompt_lang", "zh"),
         "text_split_method": "cut5",
         "batch_size": 1,
         "media_type": media_type,
@@ -92,57 +107,59 @@ def _tts_payload(text: str, ref: dict, media_type: str = "wav", speed_factor: fl
 def _validate_wav_bytes(wav_bytes: bytes) -> tuple[int, int, int, int]:
     """拒绝非完整、空的、非 PCM 的 WAV 响应体，防止把坏音频写入磁盘。"""
     try:
-        with wave.open(io.BytesIO(wav_bytes), "rb") as wav:
-            if wav.getcomptype() != "NONE":
-                raise ValueError(f"unsupported WAV compression: {wav.getcomptype()}")
-            channels = wav.getnchannels()
-            sample_width = wav.getsampwidth()
-            sample_rate = wav.getframerate()
-            frame_count = wav.getnframes()
+        with wave.open(io.BytesIO(wav_bytes), "rb") as wav_file:
+            if wav_file.getcomptype() != "NONE":
+                raise ValueError(f"unsupported WAV compression: {wav_file.getcomptype()}")
+            channels = wav_file.getnchannels()
+            sample_width = wav_file.getsampwidth()
+            sample_rate = wav_file.getframerate()
+            frame_count = wav_file.getnframes()
             if channels <= 0 or sample_width <= 0 or sample_rate <= 0 or frame_count <= 0:
                 raise ValueError("WAV has invalid or empty audio parameters")
-            frames = wav.readframes(frame_count)
+            audio_frames = wav_file.readframes(frame_count)
             expected_size = frame_count * channels * sample_width
-            if len(frames) != expected_size:
-                raise ValueError(f"truncated WAV data: expected {expected_size} bytes, got {len(frames)}")
+            if len(audio_frames) != expected_size:
+                raise ValueError(
+                    f"truncated WAV data: expected {expected_size} bytes, got {len(audio_frames)}"
+                )
     except (EOFError, wave.Error) as exc:
         raise ValueError("GPT-SoVITS response is not a decodable WAV") from exc
     return channels, sample_width, sample_rate, frame_count
 
 
-def _reference_fingerprint(ref: dict, speed_factor: float) -> dict:
-    payload = _tts_payload("", ref, speed_factor=speed_factor)
-    audio_path = Path(payload["ref_audio_path"])
+def _compute_reference_fingerprint(reference: dict, speed_factor: float) -> dict:
+    tts_payload = _build_tts_payload("", reference, speed_factor=speed_factor)
+    audio_path = Path(tts_payload["ref_audio_path"])
     audio_sha256 = None
     if audio_path.is_file():
         audio_sha256 = hashlib.sha256(audio_path.read_bytes()).hexdigest()
     return {
         "audio_path": str(audio_path),
         "audio_sha256": audio_sha256,
-        "prompt_text": payload["prompt_text"],
-        "prompt_lang": payload["prompt_lang"],
-        "text_lang": payload["text_lang"],
-        "speed_factor": payload["speed_factor"],
+        "prompt_text": tts_payload["prompt_text"],
+        "prompt_lang": tts_payload["prompt_lang"],
+        "text_lang": tts_payload["text_lang"],
+        "speed_factor": tts_payload["speed_factor"],
     }
 
 
-def _file_sha256(path_value: str) -> str:
+def _compute_file_sha256(file_path: str) -> str:
     digest = hashlib.sha256()
-    with Path(path_value).open("rb") as file:
-        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+    with Path(file_path).open("rb") as input_file:
+        for chunk in iter(lambda: input_file.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
 
 
-def _weight_fingerprint(value: str | Path) -> dict:
-    path = resolve_path(value) if value else None
+def _compute_weight_fingerprint(weight_path: str | Path) -> dict:
+    resolved_path = resolve_path(weight_path) if weight_path else None
     content_sha256 = None
-    if path is not None and path.is_file():
-        # File metadata can remain unchanged when a same-size model is replaced
-        # quickly. Hash the bytes so a stale TTS asset can never be reused.
-        content_sha256 = _file_sha256(str(path))
+    if resolved_path is not None and resolved_path.is_file():
+        # 文件被快速替换为同大小模型时，元数据可能保持不变。
+        # 对文件内容取哈希，避免复用过期的 TTS 资源。
+        content_sha256 = _compute_file_sha256(str(resolved_path))
     return {
-        "path": str(path) if path is not None else "",
+        "path": str(resolved_path) if resolved_path is not None else "",
         "sha256": content_sha256,
     }
 
@@ -166,26 +183,32 @@ def tts_cache_fingerprint(
     """
     from audio_service.emotion import parse_emotional_text, resolve_emotion_ref
 
-    model = dict(config.get("model", {}))
-    model["gpt_weights"] = os.getenv("GPT_SOVITS_GPT_WEIGHTS") or model.get("gpt_weights", "")
-    model["sovits_weights"] = os.getenv("GPT_SOVITS_SOVITS_WEIGHTS") or model.get("sovits_weights", "")
-    model["gpt_weights"] = _weight_fingerprint(model["gpt_weights"])
-    model["sovits_weights"] = _weight_fingerprint(model["sovits_weights"])
-    default_ref = config.get("reference", {})
-    emotion_refs = config.get("emotion_refs", {})
-    speed_map = _emotion_speed_factors()
-    references = []
+    model_config = dict(config.get("model", {}))
+    model_config["gpt_weights"] = os.getenv("GPT_SOVITS_GPT_WEIGHTS") or model_config.get("gpt_weights", "")
+    model_config["sovits_weights"] = os.getenv("GPT_SOVITS_SOVITS_WEIGHTS") or model_config.get("sovits_weights", "")
+    model_config["gpt_weights"] = _compute_weight_fingerprint(model_config["gpt_weights"])
+    model_config["sovits_weights"] = _compute_weight_fingerprint(model_config["sovits_weights"])
+    default_reference = config.get("reference", {})
+    emotion_references = config.get("emotion_refs", {})
+    speed_factors = _emotion_speed_factors()
+    reference_fingerprints = []
     for segment in parse_emotional_text(text):
-        speed = float(speed_map.get(segment.emotion, 1.0)) * float(speed_factor) * float(budget_overage)
-        ref = resolve_emotion_ref(segment.emotion, emotion_refs, default_ref)
-        references.append({
-            "emotion": segment.emotion,
-            **_reference_fingerprint(ref, speed),
-        })
+        segment_speed_factor = (
+            float(speed_factors.get(segment.emotion, 1.0))
+            * float(speed_factor)
+            * float(budget_overage)
+        )
+        reference = resolve_emotion_ref(segment.emotion, emotion_references, default_reference)
+        reference_fingerprints.append(
+            {
+                "emotion": segment.emotion,
+                **_compute_reference_fingerprint(reference, segment_speed_factor),
+            }
+        )
     encoded = json.dumps(
         {
-            "model": model,
-            "references": references,
+            "model": model_config,
+            "references": reference_fingerprints,
             "variant_id": variant_id,
             "profile_id": profile_id,
             "speed_factor": float(speed_factor),
@@ -205,22 +228,27 @@ def tts_runtime_fingerprint(config: dict, sample_rate_hz: int | None = None) -> 
     用于与 speech profile（§11.5）核对：任务单引用的 profile 指纹必须与
     Phase4 当前 TTS 运行指纹完全一致，否则禁止按任务单风险分级合成。
     """
-    model = dict(config.get("model", {}))
-    model["gpt_weights"] = os.getenv("GPT_SOVITS_GPT_WEIGHTS") or model.get("gpt_weights", "")
-    model["sovits_weights"] = os.getenv("GPT_SOVITS_SOVITS_WEIGHTS") or model.get("sovits_weights", "")
+    model_config = dict(config.get("model", {}))
+    model_config["gpt_weights"] = os.getenv("GPT_SOVITS_GPT_WEIGHTS") or model_config.get("gpt_weights", "")
+    model_config["sovits_weights"] = os.getenv("GPT_SOVITS_SOVITS_WEIGHTS") or model_config.get("sovits_weights", "")
     engine_payload = {
         "engine": "gpt-sovits",
-        "weights": {key: _weight_fingerprint(value) for key, value in model.items()},
+        "weights": {
+            key: _compute_weight_fingerprint(weight_path)
+            for key, weight_path in model_config.items()
+        },
     }
-    refs_payload: dict[str, dict] = {}
-    default_ref = config.get("reference", {})
-    if isinstance(default_ref, dict) and default_ref:
-        refs_payload["default"] = _reference_fingerprint(default_ref, 1.0)
-    emotion_refs = config.get("emotion_refs", {})
-    if isinstance(emotion_refs, dict):
-        for emotion in sorted(emotion_refs):
-            if isinstance(emotion_refs[emotion], dict):
-                refs_payload[emotion] = _reference_fingerprint(emotion_refs[emotion], 1.0)
+    reference_payload: dict[str, dict] = {}
+    default_reference = config.get("reference", {})
+    if isinstance(default_reference, dict) and default_reference:
+        reference_payload["default"] = _compute_reference_fingerprint(default_reference, 1.0)
+    emotion_references = config.get("emotion_refs", {})
+    if isinstance(emotion_references, dict):
+        for emotion in sorted(emotion_references):
+            if isinstance(emotion_references[emotion], dict):
+                reference_payload[emotion] = _compute_reference_fingerprint(
+                    emotion_references[emotion], 1.0
+                )
     preprocess_payload = {
         "policy": "phase4-pcm-policy-v1",
         "text_split_method": "cut5",
@@ -230,27 +258,36 @@ def tts_runtime_fingerprint(config: dict, sample_rate_hz: int | None = None) -> 
         "sample_rate_hz": sample_rate_hz,
     }
 
-    def _digest(payload: dict) -> str:
-        encoded = json.dumps(
+    def _compute_digest(payload: dict) -> str:
+        encoded_payload = json.dumps(
             payload,
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
             default=str,
         ).encode("utf-8")
-        return hashlib.sha256(encoded).hexdigest()
+        return hashlib.sha256(encoded_payload).hexdigest()
 
     return {
-        "engine_fingerprint": _digest(engine_payload),
-        "voice_fingerprint": _digest(refs_payload),
-        "preprocess_fingerprint": _digest(preprocess_payload),
+        "engine_fingerprint": _compute_digest(engine_payload),
+        "voice_fingerprint": _compute_digest(reference_payload),
+        "preprocess_fingerprint": _compute_digest(preprocess_payload),
     }
 
 
-def _synthesize_bytes(config: dict, text: str, ref: dict, speed_factor: float = 1.0) -> bytes:
+def _synthesize_bytes(
+    config: dict,
+    text: str,
+    reference: dict,
+    speed_factor: float = 1.0,
+) -> bytes:
     """调用 GPT-SoVITS 的 /tts 接口，返回原始 WAV 字节，不落盘。"""
-    api_url = _api_url(config)
-    response = requests.post(f"{api_url}/tts", json=_tts_payload(text, ref, speed_factor=speed_factor), timeout=300)
+    api_url = _resolve_api_url(config)
+    response = requests.post(
+        f"{api_url}/tts",
+        json=_build_tts_payload(text, reference, speed_factor=speed_factor),
+        timeout=300,
+    )
     response.raise_for_status()
     wav_bytes = response.content
     _validate_wav_bytes(wav_bytes)
@@ -266,7 +303,11 @@ def synthesize_segment(config: dict, text: str, ref: dict, output_path: Path) ->
 
 def synthesize(config: dict, text: str, output_path: Path) -> None:
     model_config = config.get("model", {})
-    set_weights(_api_url(config), model_config.get("gpt_weights", ""), model_config.get("sovits_weights", ""))
+    set_weights(
+        _resolve_api_url(config),
+        model_config.get("gpt_weights", ""),
+        model_config.get("sovits_weights", ""),
+    )
     synthesize_segment(config, text, config.get("reference", {}), output_path)
     print(f"audio written: {output_path}")
 
@@ -289,89 +330,71 @@ def synthesize_emotional(
     from audio_service.emotion import parse_emotional_text, resolve_emotion_ref
 
     model_config = config.get("model", {})
-    set_weights(_api_url(config), model_config.get("gpt_weights", ""), model_config.get("sovits_weights", ""))
+    set_weights(
+        _resolve_api_url(config),
+        model_config.get("gpt_weights", ""),
+        model_config.get("sovits_weights", ""),
+    )
 
-    default_ref = config.get("reference", {})
-    emotion_refs = config.get("emotion_refs", {})
+    default_reference = config.get("reference", {})
+    emotion_references = config.get("emotion_refs", {})
     segments = parse_emotional_text(text)
     if not segments:
         raise ValueError("commentary text is empty or contains only emotion tags")
 
-    # 顶部一次性加载 tts_speed_factor，避免每段重复读磁盘
-    speed_map = _emotion_speed_factors()
-    overage_mult = max(1.0, min(1.5, budget_overage))
+    # 一次性加载 tts_speed_factor，避免每段重复读取磁盘。
+    speed_factors = _emotion_speed_factors()
+    budget_speed_multiplier = max(1.0, min(1.5, budget_overage))
 
-    # 按情绪批量请求,保持原始顺序
-    ordered_bytes: list[bytes] = [b""] * len(segments)
-    by_emotion: dict[str, list[int]] = {}
-    for i, seg in enumerate(segments):
-        by_emotion.setdefault(seg.emotion, []).append(i)
+    # 按情绪批量请求，保持原始顺序。
+    ordered_wav_bytes: list[bytes] = [b""] * len(segments)
+    segment_indices_by_emotion: dict[str, list[int]] = {}
+    for segment_index, segment in enumerate(segments):
+        segment_indices_by_emotion.setdefault(segment.emotion, []).append(segment_index)
 
-    for emotion, indices in by_emotion.items():
-        ref = resolve_emotion_ref(emotion, emotion_refs, default_ref)
-        speed = float(speed_map.get(emotion, 1.0)) * overage_mult * float(speed_factor)
-        for i in indices:
-            ordered_bytes[i] = _synthesize_bytes(config, segments[i].text, ref, speed_factor=speed)
+    for emotion, segment_indices in segment_indices_by_emotion.items():
+        reference = resolve_emotion_ref(emotion, emotion_references, default_reference)
+        segment_speed_factor = (
+            float(speed_factors.get(emotion, 1.0))
+            * budget_speed_multiplier
+            * float(speed_factor)
+        )
+        for segment_index in segment_indices:
+            ordered_wav_bytes[segment_index] = _synthesize_bytes(
+                config,
+                segments[segment_index].text,
+                reference,
+                speed_factor=segment_speed_factor,
+            )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    if len(ordered_bytes) == 1:
-        output_path.write_bytes(ordered_bytes[0])
+    if len(ordered_wav_bytes) == 1:
+        output_path.write_bytes(ordered_wav_bytes[0])
     else:
-        _concat_wav_bytes(ordered_bytes, output_path)
+        _concat_wav_bytes(ordered_wav_bytes, output_path)
     print(f"audio written: {output_path} ({len(segments)} segments, in-memory concat)")
     return output_path
 
 
-def _concat_wav_bytes(wav_blobs: list[bytes], output_path: Path) -> None:
+def _concat_wav_bytes(wav_bytes_list: list[bytes], output_path: Path) -> None:
     """把内存中的多段 WAV 字节拼接成单个 WAV 文件，不使用临时文件。"""
-    params = None
-    all_frames: list[bytes] = []
-    with wave.open(io.BytesIO(wav_blobs[0]), "rb") as first:
-        params = first.getparams()
-        all_frames.append(first.readframes(first.getnframes()))
-    for blob in wav_blobs[1:]:
-        with wave.open(io.BytesIO(blob), "rb") as w:
-            if w.getparams()[:3] != params[:3]:  # nchannels, sampwidth, framerate
+    wav_params = None
+    all_audio_frames: list[bytes] = []
+    with wave.open(io.BytesIO(wav_bytes_list[0]), "rb") as first_wav:
+        wav_params = first_wav.getparams()
+        all_audio_frames.append(first_wav.readframes(first_wav.getnframes()))
+    for wav_bytes in wav_bytes_list[1:]:
+        with wave.open(io.BytesIO(wav_bytes), "rb") as wav_file:
+            if wav_file.getparams()[:3] != wav_params[:3]:  # 声道数、采样宽度和采样率
                 raise RuntimeError(
-                    f"WAV format mismatch: expected {params[:3]}, got {w.getparams()[:3]}"
+                    f"WAV format mismatch: expected {wav_params[:3]}, got {wav_file.getparams()[:3]}"
                 )
-            all_frames.append(w.readframes(w.getnframes()))
+            all_audio_frames.append(wav_file.readframes(wav_file.getnframes()))
 
-    with wave.open(str(output_path), "wb") as out:
-        out.setparams(params)
-        for chunk in all_frames:
-            out.writeframes(chunk)
-
-
-def _concat_audio(parts: list[Path], output_path: Path) -> None:
-    try:
-        from pydub import AudioSegment
-    except ImportError:
-        _concat_wav_stdlib(parts, output_path)
-        return
-
-    combined = AudioSegment.empty()
-    for part in parts:
-        combined += AudioSegment.from_file(part)
-    combined.export(output_path, format=output_path.suffix.lower().lstrip(".") or "wav")
-
-
-def _concat_wav_stdlib(parts: list[Path], output_path: Path) -> None:
-    import io
-    import wave
-
-    if output_path.suffix.lower() != ".wav":
-        raise RuntimeError("pydub is required to concatenate non-wav audio")
-    with wave.open(str(parts[0]), "rb") as first:
-        params = first.getparams()
-        frames = [first.readframes(first.getnframes())]
-    for part in parts[1:]:
-        with wave.open(str(part), "rb") as wav:
-            frames.append(wav.readframes(wav.getnframes()))
-    with wave.open(str(output_path), "wb") as out:
-        out.setparams(params)
-        for chunk in frames:
-            out.writeframes(chunk)
+    with wave.open(str(output_path), "wb") as output_wav:
+        output_wav.setparams(wav_params)
+        for audio_frame_chunk in all_audio_frames:
+            output_wav.writeframes(audio_frame_chunk)
 
 
 def parse_args() -> argparse.Namespace:

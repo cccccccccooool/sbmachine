@@ -1,5 +1,7 @@
-"""6657 风格离线录像解说 AI 项目
-项目功能：搭建一个"整段 CS2 录像 -> 分回合时间线 -> 人设 LLM 解说文本 -> GPT-SoVITS 语音"的离线生成流水线。
+"""6657 风格离线录像解说 AI 项目。
+
+项目功能：搭建一个“整段 CS2 录像 -> 分回合时间线 -> 人设 LLM 解说文本 -> GPT-SoVITS
+语音”的离线生成流水线。
 本文件功能：统一配置文件加载器。
 
 启动方式：被 sbmachine/common.py 的 load_config() 间接调用，也被各阶段脚本直接导入。
@@ -44,17 +46,17 @@ def _merge_config(
             _record_origins(value, key_path, source, origins)
             continue
 
-        current = target[key]
-        if isinstance(current, dict) and isinstance(value, dict):
-            _merge_config(current, value, source=source, origins=origins, path=key_path)
+        current_value = target[key]
+        if isinstance(current_value, dict) and isinstance(value, dict):
+            _merge_config(current_value, value, source=source, origins=origins, path=key_path)
             continue
-        if current == value:
+        if current_value == value:
             continue
 
-        previous = origins.get(key_path, "an earlier config file")
-        dotted = ".".join(key_path)
+        previous_source = origins.get(key_path, "an earlier config file")
+        dotted_path = ".".join(key_path)
         raise ConfigError(
-            f"config conflict at '{dotted}': {previous} defines {current!r}, "
+            f"config conflict at '{dotted_path}': {previous_source} defines {current_value!r}, "
             f"but {source} defines {value!r}"
         )
 
@@ -63,13 +65,13 @@ def _load_yaml(path: Path) -> dict:
     import yaml
 
     try:
-        with path.open(encoding="utf-8") as file:
-            data = yaml.safe_load(file) or {}
+        with path.open(encoding="utf-8") as config_file:
+            yaml_data = yaml.safe_load(config_file) or {}
     except yaml.YAMLError as exc:
         raise ConfigError(f"invalid YAML in {path}: {exc}") from exc
-    if not isinstance(data, dict):
+    if not isinstance(yaml_data, dict):
         raise ConfigError(f"config root must be a mapping: {path}")
-    return data
+    return yaml_data
 
 
 def _resolve_path(value: Any) -> Path | None:
@@ -122,18 +124,18 @@ def load_config(path_or_dir=None) -> dict:
         raise ConfigError(f"config path does not exist: {config_path}")
 
     if config_path.is_dir():
-        merged: dict = {}
+        merged_config: dict = {}
         origins: dict[tuple[str, ...], str] = {}
         for yaml_file in sorted(config_path.glob("*.yaml")):
-            data = _load_yaml(yaml_file)
-            # train.yaml 直接加载时保留其文件内的原始 schema；而目录整体加载时
-            # 需把它包进 train 命名空间隔离，避免 train.profile 覆盖顶层 profile。
+            yaml_data = _load_yaml(yaml_file)
+            # 直接加载 train.yaml 时保留文件内的原始 schema；整体加载目录时，
+            # 将其包进 train 命名空间，避免 train.profile 覆盖顶层 profile。
             if yaml_file.name == "train.yaml":
-                data = {"train": data}
-            _merge_config(merged, data, source=yaml_file.name, origins=origins)
-        _normalize_demo_path(merged)
-        return merged
+                yaml_data = {"train": yaml_data}
+            _merge_config(merged_config, yaml_data, source=yaml_file.name, origins=origins)
+        _normalize_demo_path(merged_config)
+        return merged_config
 
-    config = _load_yaml(config_path)
-    _normalize_demo_path(config)
-    return config
+    loaded_config = _load_yaml(config_path)
+    _normalize_demo_path(loaded_config)
+    return loaded_config
