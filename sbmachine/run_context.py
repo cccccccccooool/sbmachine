@@ -12,27 +12,18 @@ from typing import Any
 
 import yaml
 
+from sbmachine.common import PRODUCT_FILENAMES
 
-_PATH_OUTPUTS = {
-    "rounds_json": "rounds.json",
-    "round_list_json": "round_list.json",
-    "segments_out_json": "segments.json",
-    "rounds_with_yolo_json": "rounds_with_yolo.json",
-    "rounds_with_yolo_semantic_json": "rounds_with_yolo_semantic.json",
-    "rounds_with_neutral_json": "rounds_with_neutral.json",
-    "rounds_with_commentary_json": "rounds_with_commentary.json",
-    "rounds_final_json": "rounds_final.json",
-    "commentary_json": "commentary.json",
-    "assemble_manifest_json": "assemble_manifest.json",
-}
+_PATH_OUTPUTS = PRODUCT_FILENAMES
 
 _STAGE_ARTIFACTS = (
     ("demo_parse", ("demo",)),
     ("video_marking", ("sbmachine/detector_rows.jsonl", "sbmachine/segments.json")),
     ("phase1", ("sbmachine/rounds.json", "sbmachine/round_list.json", "sbmachine/segments.json", "sbmachine/clips")),
     ("phase2", ("sbmachine/rounds_with_yolo.json", "sbmachine/rounds_with_yolo_semantic.json")),
-    ("phase3a", ("sbmachine/rounds_with_neutral.json",)),
-    ("phase3b", ("sbmachine/rounds_with_commentary.json", "sbmachine/commentary.json")),
+    ("phase3a", ("sbmachine/rounds_with_neutral.json", "sbmachine/llma_input.json")),
+    ("phase3b", ("sbmachine/rounds_with_commentary.json", "sbmachine/commentary.json", "sbmachine/llmb_draft_package.json")),
+    ("phase3c", ("sbmachine/commentary_render_package.json",)),
     (
         "phase4",
         (
@@ -123,15 +114,8 @@ class RunContext:
         phase4["tts_cache_dir"] = str(sb_dir / ".cache" / "tts")
         phase4["clip_cache_dir"] = str(sb_dir / ".cache" / "clips")
 
-        tts = effective.setdefault("tts", {})
-        tts["output_dir"] = str(sb_dir / "audio")
-        tts["final_audio"] = str(sb_dir / "final_commentary.wav")
-        video = effective.setdefault("video", {})
-        video["clip_dir"] = str(sb_dir / "video_clips")
-        video["final_video"] = str(sb_dir / "final_video.mp4")
-
-        # 现有的 debug 写入方用的是仓库全局路径，不属于发布契约，
-        # 因此事务化运行时禁用它们。
+        # debug.phase3 由 --debug CLI 标志经 env var 控制；
+        # 此处强制 False 防止旧配置文件残留字段静默激活 debug 落盘。
         debug = effective.setdefault("debug", {})
         debug["phase3"] = False
         return effective
@@ -148,7 +132,12 @@ class RunContext:
         if isinstance(value, list):
             return [self._rewrite_value(child) for child in value]
         if isinstance(value, str):
-            return value.replace(str(self.publish_dir), str(self.output_root))
+            pub_win = str(self.publish_dir).replace("/", "\\")
+            pub_posix = str(self.publish_dir).replace("\\", "/")
+            out_win = str(self.output_root).replace("/", "\\")
+            out_posix = str(self.output_root).replace("\\", "/")
+            res = value.replace(pub_win, out_win).replace(pub_posix, out_posix)
+            return res.replace(str(self.publish_dir), str(self.output_root))
         return value
 
     def rewrite_published_references(self) -> None:
@@ -172,25 +161,66 @@ class RunContext:
         validate_neutral_manifest(payload, rounds_path)
 
     def checkpoint(self, stage: str) -> None:
-        """发布一个已校验的独立阶段，但不结束本次运行。
-
-        checkpoint 刻意保持暂存目录树完整：后续阶段仍消费各自暂存的输入，
-        而一旦之后失败，已校验的上游工件仍可用于按阶段选择性重跑。
-        """
-        names = ("demo",) if stage == "demo_parse" else ("sbmachine",)
+        """发布一个已经通过当前阶段门禁的工件集合。"""
         checkpoint_root = self.staging_dir / "checkpoints" / stage
         if checkpoint_root.exists():
             shutil.rmtree(checkpoint_root)
-        for name in names:
-            source = self.publish_dir / name
-            if source.exists():
-                shutil.copytree(source, checkpoint_root / name)
-        if not any((checkpoint_root / name).exists() for name in names):
-            raise ValueError(f"checkpoint {stage} has no publishable outputs")
-        self._rewrite_references_in(checkpoint_root)
-        self._promote_from(checkpoint_root, names)
+
+        if stage in {"phase3a", "phase3b"}:
+            artifacts = dict(_STAGE_ARTIFACTS)[stage]
+            for relative in artifacts:
+                source = self.publish_dir / relative
+                if not source.exists():
+                    raise ValueError(f"checkpoint {stage} is missing declared artifact: {relative}")
+                target = checkpoint_root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if source.is_dir():
+                    shutil.copytree(source, target)
+                else:
+                    shutil.copy2(source, target)
+            self._promote_stage_artifacts(checkpoint_root, artifacts)
+        else:
+            names = ("demo",) if stage == "demo_parse" else ("sbmachine",)
+            for name in names:
+                source = self.publish_dir / name
+                if source.exists():
+                    shutil.copytree(source, checkpoint_root / name)
+            if not any((checkpoint_root / name).exists() for name in names):
+                raise ValueError(f"checkpoint {stage} has no publishable outputs")
+            self._rewrite_references_in(checkpoint_root)
+            self._promote_from(checkpoint_root, names)
+
         self.checkpointed_stages.append(stage)
 
+    def _promote_stage_artifacts(self, source_root: Path, artifacts: tuple[str, ...]) -> None:
+        """原子地提升一个阶段声明的文件，不替换整个 sbmachine 目录。"""
+        backups = self.diagnostics_dir / "previous_success"
+        moved_old: list[tuple[Path, Path]] = []
+        moved_new: list[tuple[Path, Path]] = []
+        try:
+            for relative in artifacts:
+                source = source_root / relative
+                target = self.output_root / relative
+                if target.exists() or target.is_symlink():
+                    backup = backups / relative
+                    backup.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(target, backup)
+                    moved_old.append((backup, target))
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(source, target)
+                moved_new.append((target, source))
+        except Exception:
+            for target, source in reversed(moved_new):
+                if target.exists() or target.is_symlink():
+                    source.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(target, source)
+            for backup, target in reversed(moved_old):
+                if backup.exists() or backup.is_symlink():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(backup, target)
+            raise
+        if backups.exists():
+            shutil.rmtree(backups, ignore_errors=True)
     def _rewrite_references_in(self, root: Path) -> None:
         for path in root.rglob("*.json"):
             try:

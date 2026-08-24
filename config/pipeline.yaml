@@ -1,59 +1,89 @@
-profile: lite  # 当前运行/训练档位标识；运行时主要用于记录和选择默认策略。
+# ============================================================
+# sbmachine 流水线配置
+# 控制：阶段开关、输入/输出路径、服务编排、Phase4 合成参数。
+# 路径均相对项目根目录。保存后即可生效。
+# ============================================================
 
+# 运行档位标识（仅用于记录，一般不用改）
+profile: lite
+
+# ── demo 解析（Phase1）──
+demo:
+  parsed_dir: output/demo          # demo 解析结果输出目录
+  anchor_tolerance_sec: 2.0        # demo 事件与视频时间对齐容差（秒）；越大越宽松
+  plant_empty_timer_frames: 3      # 连续 N 帧无 timer 读数，判定进入拆包冻结
+
+# ── 服务编排 ──
 runtime:
-  backend: local  # local: host processes; container: host core plus Compose talk/voice services.
-  manage_services: true  # 是否由编排器自动启动/停止本地或 Compose 服务。
-  compose_file: docker-compose.yml  # manage_services 使用的 Compose 文件。
-  one_model_at_a_time: true  # 是否串行占用语义和 TTS 模型显存。
-  use_gpu_guard: false  # 阶段切换时是否调用 gpu_guard 释放/恢复显存。
+  manage_services: true            # true=程序自动拉起/关闭 AI 服务；false=自己手动起服务
+  compose_file: docker-compose.yml # Compose 文件（仅用容器编排时生效）
+  one_model_at_a_time: true        # 是否串行占用模型显存（语义/TTS 不同时加载）
+  use_gpu_guard: false             # 开发调试用，请勿开启
 
-  services:
+  perf:                            # 性能锁：资源吃紧时给切片降速（python run.py --turbo 会放开）
+    enabled: true                  # true=启用节流
+    cpu_ceiling: 0.8               # CPU 使用率上限（0.8=80%），超限则降速
+    mem_ceiling: 0.8               # 内存使用率上限（0.8=80%），超限则降速
+    throttle_sec: 1.0              # 超限后每次休眠秒数
+
+  services:                        # 各 AI 服务的启停与启动命令
     vllm:
-      enabled: true  # 语义 vLLM 服务是否纳入服务管理。
-      start: "bash docker/talk_entrypoint.sh"  # vLLM 服务启动命令。
-      startup_timeout_sec: 180  # vLLM 服务就绪等待上限（秒）。
+      enabled: true                # 是否把 vLLM 纳入服务管理
+      start: "bash docker/talk_entrypoint.sh"  # vLLM 启动命令
+      startup_timeout_sec: 300     # 就绪等待上限（秒，含模型下载）
     sovits:
-      enabled: true  # GPT-SoVITS 服务是否纳入服务管理。
-      start: "bash -c 'cd /opt/GPT-SoVITS && python api_v2.py -a 0.0.0.0 -p 9880'"  # TTS 启动命令。
-      startup_timeout_sec: 90  # TTS 服务就绪等待上限（秒）。
+      enabled: true                # 是否把 GPT-SoVITS 纳入服务管理
+      start: "bash -c 'cd /opt/GPT-SoVITS && python api_v2.py -a 0.0.0.0 -p 9880'"  # TTS 启动命令
+      startup_timeout_sec: 90      # 就绪等待上限（秒）
 
+# ── 阶段开关：true=执行该阶段；false=跳过（复用上次已 checkpoint 产物）──
 phases:
-  demo_parse: true  # 是否解析原始 .dem 并生成 output/demo 工件。
-  video_marking: true  # 是否运行 frame-type + 可选 replay 的视频粗标记（不调用 HUD YOLO/OCR）。
-  preprocess_slice: true  # 是否根据 segments 生成回合级 rounds.json。
-  phase2_yolo: true  # 是否运行 DEM 时间轴、HUD YOLO 和 POV/timer/score OCR 融合。
-  phase3a_semantic: true  # 是否运行结构化语义分析。
-  phase3b_semantic: true  # 是否运行人设/风格解说生成。
-  phase4_assemble: true  # 是否运行 TTS 和逐局音视频混合。
+  demo_parse: false        # Phase1 解析 .dem 并切分回合
+  video_marking: false     # 视频粗标记（比赛/间歇帧分类）
+  preprocess_slice: false  # 按 segments 生成回合级 rounds.json
+  phase2_yolo: false       # Phase2 时间轴对齐 + HUD YOLO + POV/timer/score OCR
+  phase3a_semantic: false  # Phase3a 中性语义分析（LLM-A）
+  phase3b_semantic: false  # Phase3b 人设/风格解说生成（LLM-B）
+  phase3c_render: true     # Phase3c LLM-C 渲染润色（启用后 Phase4 只消费 render package）
+  phase4_assemble: true    # Phase4 配音 + 逐局音视频合成
 
-debug:
-  phase3: true  # 是否保留 Phase3 调试输出；正式运行按需关闭。
-
+# ── 路径（产物默认统一进 output_dir，无需逐个配置）──
 paths:
-  demo: data\temp\sucai\gamerlegion-vs-big-m2-ancient.dem  # 原始 demo 输入路径。
-  demo_output_dir: output/demo  # Go demo parser 的发布目录。
-  video: data\temp\sucai\test_30min_h264.mp4  # 整场视频输入路径。
-  map_name: Unknown  # 地图名；无法从外部数据获取时使用此值。
-  hud_detections_jsonl: examples/offline/demo_detections.jsonl  # video_marking 逐帧检测输出；正式运行会由事务路径覆盖。
-  segments_json:  # 可选的外部 segments 输入；为空时使用 video_marking 结果。
-  clip_dir:  # 可选的 Phase1 提前切片目录；为空时 Phase4 延迟切片。
+  output_dir: output/sbmachine   # 全部阶段产物统一输出目录
+  demo:                          # 原始 demo 输入（.dem 路径；跑 Phase1 时必填）
+  demo_output_dir: output/demo   # demo 解析输出目录
+  video:                         # 整场视频输入（.mp4 路径；Phase2/4 需要）
+  map_name:                      # 地图名；无法从外部拿到时的兜底值
+  hud_detections_jsonl: output/sbmachine/demo_detections.jsonl  # video_marking 逐帧检测输出
+  segments_json:                 # 外部 segments 输入；留空=用 video_marking 结果
+  clip_dir:                      # Phase1 提前切片目录；留空=Phase4 延迟切片
 
-  rounds_json: output/sbmachine/rounds.json  # Phase1 回合包。
-  round_list_json: output/sbmachine/round_list.json  # Phase1 轻量回合列表。
-  segments_out_json: output/sbmachine/segments.json  # Phase1 segments 输出。
-  rounds_with_yolo_json: output/sbmachine/rounds_with_yolo.json  # Phase2 时间轴、YOLO 和 POV 输出。
-  rounds_with_yolo_semantic_json: output/sbmachine/rounds_with_yolo_semantic.json  # Phase2 派生的精简 DEM 事实帧时间轴（list[round]，不含 YOLO box/tags）。
-  llma_input_json: output/sbmachine/llma_input.json  # Phase3a 定版的 LLM-A 输入中间产物：每窗规则集 plan + 增量状态报告(state_block) + 氛围帧。
-  rounds_with_neutral_json: output/sbmachine/rounds_with_neutral.json  # Phase3a 中性语义输出。
-  rounds_with_commentary_json: output/sbmachine/rounds_with_commentary.json  # Phase3b 解说输出。
-  rounds_final_json: output/sbmachine/rounds_final.json  # Phase4 最终回合包。
-  commentary_json: output/sbmachine/commentary.json  # Phase3b 独立 commentary 契约文件。
-  assemble_manifest_json: output/sbmachine/assemble_manifest.json  # Phase4 音视频产物清单。
-
+# ── Phase4 合成参数 ──
 phase4:
-  output_dir: output/sbmachine/rounds  # 逐局 WAV、scene WAV 和 MP4 输出目录。
-  tts_cache_dir: output/tts_cache  # TTS 文本/配置指纹缓存目录。
-  clip_cache_dir: output/clips  # 从整场视频延迟切出的逐局视频缓存目录。
-  commentary_volume: 1.0  # 解说音量倍数。
-  game_audio_volume: 0.25  # 游戏原声音量倍数。
-  make_video: false  # 是否生成逐局带混音 MP4；false 时只生成音频。
+  output_dir: output/sbmachine/rounds   # 逐局 WAV/MP4 输出目录
+  tts_cache_dir: output/tts_cache       # TTS 缓存目录
+  clip_cache_dir: output/clips          # 逐局视频缓存目录
+  publish_profile: legacy               # 发布档位：legacy | strict_av | strict_c | broadcast（默认 legacy=保持旧行为）
+  clip_mode: strict_decode              # 切片方式：legacy_copy | strict_decode（strict 档必须用 strict_decode）
+  media_probe:                          # 媒体探测
+    ffmpeg_bin: ffmpeg                  # ffmpeg 可执行文件
+    ffprobe_bin: ffprobe                # ffprobe 可执行文件
+    boundary_probe: true                # 是否做时间边界探测
+  media_tolerances:                     # 边界容差（超限判失败）
+    max_frame_boundary_error_sec: 0.05  # 画面边界最大误差（秒）
+    max_audio_boundary_error_sec: 0.01  # 音频边界最大误差（秒）
+    max_subtitle_overrun_ms: 120        # 字幕超界上限（毫秒）
+  commentary_volume: 1.0      # 解说音量倍数
+  game_audio_volume: 0.25     # 游戏原声音量倍数
+  make_video: true            # true=生成逐局混音 MP4；false=只出音频
+  tts_config: audio_service/gpt_sovits_runtime.yaml  # GPT-SoVITS 运行配置路径
+
+# ── 视频标记（video_marking 阶段参数）──
+slicer:
+  model:                      # 比赛/间歇帧分类器权重（.pt）；跑 video_marking 时必填
+  interval_sec: 1.0           # 每 N 秒采一帧；越小边界越准、开销越大
+  smooth_window: 5            # 帧标签投票窗口；越大越稳、过渡越慢
+  min_live_sec: 20            # 短于该秒数的比赛片段丢弃
+  bridge_gap_sec: 3           # 间隔不超该值的片段强制桥接（replay 证据除外）
+  device: auto                # 设备：auto | cpu | cuda | cuda:N
+  workers: 10                 # 并行区间数；1=串行，资源紧张时下调

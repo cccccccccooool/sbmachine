@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -56,6 +57,38 @@ def write_json(path: Path, payload: Any) -> Path:
     return path
 
 
+# ── 阶段产物统一输出目录与固定文件名 ──
+# 只要给定一个输出目录（paths.output_dir，默认 output/sbmachine），未单独
+# 指定的产物路径自动派生成 <output_dir>/<固定文件名>，无需逐个写死。
+DEFAULT_OUTPUT_DIR = "output/sbmachine"
+
+PRODUCT_FILENAMES: dict[str, str] = {
+    "rounds_json": "rounds.json",
+    "round_list_json": "round_list.json",
+    "segments_out_json": "segments.json",
+    "rounds_with_yolo_json": "rounds_with_yolo.json",
+    "rounds_with_yolo_semantic_json": "rounds_with_yolo_semantic.json",
+    "rounds_with_neutral_json": "rounds_with_neutral.json",
+    "llma_input_json": "llma_input.json",
+    "rounds_with_commentary_json": "rounds_with_commentary.json",
+    "llmb_draft_package_json": "llmb_draft_package.json",
+    "commentary_render_package_json": "commentary_render_package.json",
+    "rounds_final_json": "rounds_final.json",
+    "commentary_json": "commentary.json",
+    "assemble_manifest_json": "assemble_manifest.json",
+}
+
+
+def ensure_output_paths(config: dict) -> dict:
+    """把未显式配置的产物路径按统一输出目录 + 固定文件名派生补齐。"""
+    paths = config.setdefault("paths", {})
+    output_dir = str(paths.get("output_dir") or DEFAULT_OUTPUT_DIR).rstrip("/\\")
+    for key, filename in PRODUCT_FILENAMES.items():
+        if not paths.get(key):
+            paths[key] = f"{output_dir}/{filename}"
+    return config
+
+
 def load_config(path_or_dir: Path | str | None = None) -> dict:
     """从 config/ 目录（递归合并所有 yaml 文件）或单个 yaml 文件中加载配置。"""
     from core.config_loader import load_config as _load
@@ -92,6 +125,11 @@ def _output_cap(llm_config: dict, max_tokens: int | None) -> int | None:
     return cap if cap > 0 else None
 
 
+def debug_output_dir(run_id: str) -> Path:
+    """返回 output/debug/<run_id>/ 目录路径。"""
+    return PROJECT_ROOT / "output" / "debug" / run_id
+
+
 def resolve_backend(config: dict, stage: str) -> str:
     """解析某阶段的后端：环境变量 > semantic 分阶段配置 > llm.backend > 默认 vllm。"""
     semantic = config.get("semantic", {}) if isinstance(config.get("semantic", {}), dict) else {}
@@ -99,42 +137,16 @@ def resolve_backend(config: dict, stage: str) -> str:
     env_name = f"AI6657_{stage.upper()}_BACKEND"
     return str(os.getenv(env_name) or semantic.get(f"{stage}_backend") or llm.get("backend") or "vllm").lower()
 
-def _phase3_role_enabled(phases: dict, key: str) -> bool:
-    """Return whether one Phase3 role is enabled, including the legacy switch."""
-    if key in phases:
-        return bool(phases[key])
-    return bool(phases.get("phase3_semantic", True))
+
+_SPOKEN_LATIN_RE = re.compile(r"[A-Za-z0-9]+")
 
 
-def phase3_backend_plan(config: dict) -> dict[str, str]:
-    """Map every enabled Phase3 role to its configured transport backend.
+def count_spoken_chars(text: str) -> int:
+    """口播字数：中文/符号逐字符计 1，连续英文或数字序列计 1（按词朗读）。
 
-    This is the single source of truth for deciding whether the optional local
-    vLLM/talk component is needed.  Environment overrides remain honoured via
-    :func:`resolve_backend`.
+    例："blameF击杀Tauson" → blameF(1) + 击杀(2) + Tauson(1) = 4。
+    用于 Phase3a/3b 的字符预算与超长校验，避免英文按字母数占用预算。
     """
-    phases = config.get("phases", {})
-    phases = phases if isinstance(phases, dict) else {}
-    plan: dict[str, str] = {}
-    for role, phase_key in (("analyst", "phase3a_semantic"), ("style", "phase3b_semantic")):
-        if _phase3_role_enabled(phases, phase_key):
-            plan[role] = resolve_backend(config, role)
-    return plan
-
-
-def talk_component_requirement(config: dict) -> dict[str, object]:
-    """Describe whether this run needs the optional local vLLM talk add-on."""
-    plan = phase3_backend_plan(config)
-    vllm_roles = [role for role, backend in plan.items() if backend == "vllm"]
-    if vllm_roles:
-        reason = "vllm selected for enabled Phase3 role(s): " + ", ".join(vllm_roles)
-    elif plan:
-        reason = "all enabled Phase3 role(s) use API or another non-vLLM backend"
-    else:
-        reason = "no Phase3 role is enabled"
-    return {
-        "required": bool(vllm_roles),
-        "roles": vllm_roles,
-        "active_backends": plan,
-        "reason": reason,
-    }
+    if not text:
+        return 0
+    return len(_SPOKEN_LATIN_RE.sub("", text)) + len(_SPOKEN_LATIN_RE.findall(text))
