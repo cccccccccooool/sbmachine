@@ -1,0 +1,117 @@
+{
+  "commentary_schema_version": 3,
+  "voice_task_contract_version": 1,
+  "candidate_policy": "sparse_v1",
+  "speech_metric_version": "speech_units_v1",
+  "source_neutral_run_id": "fixture-neutral-v4-run",
+  "source_neutral_sha256": "fixture-only-sha256",
+  "voice_tasks": [
+    {
+      "voice_task_id": "r001_w03",
+      "window_id": "r001_w03",
+      "render_slot": {
+        "start_sec": 12.0,
+        "end_sec": 15.0,
+        "start_tick": 360,
+        "end_tick": 450,
+        "gap_policy": "independent_window"
+      },
+      "required_fact_ids": [
+        "fact:v1:r001_w03:kill:00360:a13f92c1",
+        "fact:v1:r001_w03:round_result:00450:b721da80"
+      ],
+      "speech_profile_id": "speech-profile-v1",
+      "risk_class": "amber",
+      "selection_order": ["primary", "compact", "capsule"],
+      "max_speed_factor": 1.5,
+      "candidates": [
+        {
+          "variant_id": "primary",
+          "source": "llmb",
+          "text": "完整风格稿",
+          "felt_intensity": 0.55,
+          "spoken_units": 18,
+          "safe_duration_upper_bound_at_base_speed_sec": 3.42,
+          "minimum_required_speed_factor": 1.15,
+          "preserved_fact_ids": [
+            "fact:v1:r001_w03:kill:00360:a13f92c1",
+            "fact:v1:r001_w03:round_result:00450:b721da80"
+          ]
+        },
+        {
+          "variant_id": "compact",
+          "source": "llmb_compact",
+          "text": "紧凑风格稿",
+          "felt_intensity": 0.5,
+          "spoken_units": 14,
+          "safe_duration_upper_bound_at_base_speed_sec": 2.63,
+          "minimum_required_speed_factor": 1.0,
+          "preserved_fact_ids": [
+            "fact:v1:r001_w03:kill:00360:a13f92c1",
+            "fact:v1:r001_w03:round_result:00450:b721da80"
+          ]
+        },
+        {
+          "variant_id": "capsule",
+          "source": "rule_capsule",
+          "text": "规则层最短完整事实句",
+          "felt_intensity": 0.45,
+          "spoken_units": 11,
+          "safe_duration_upper_bound_at_base_speed_sec": 2.19,
+          "minimum_required_speed_factor": 1.0,
+          "preserved_fact_ids": [
+            "fact:v1:r001_w03:kill:00360:a13f92c1",
+            "fact:v1:r001_w03:round_result:00450:b721da80"
+          ]
+        }
+      ],
+      "semantic_state": "ok"
+    },
+    {
+      "voice_task_id": "r001_w02",
+      "window_id": "r001_w02",
+      "render_slot": {
+        "start_sec": 3.0,
+        "end_sec": 6.0,
+        "start_tick": 90,
+        "end_tick": 180,
+        "gap_policy": "independent_window"
+      },
+      "required_fact_ids": [
+        "fact:v1:r001_w02:kill:00090:5c3e9f21"
+      ],
+      "speech_profile_id": "speech-profile-v1",
+      "risk_class": "green",
+      "selection_order": ["primary", "capsule"],
+      "max_speed_factor": 1.5,
+      "candidates": [
+        {
+          "variant_id": "primary",
+          "source": "llmb",
+          "text": "主稿",
+          "felt_intensity": 0.5,
+          "spoken_units": 9,
+          "safe_duration_upper_bound_at_base_speed_sec": 2.4,
+          "minimum_required_speed_factor": 1.0,
+          "preserved_fact_ids": [
+            "fact:v1:r001_w02:kill:00090:5c3e9f21"
+          ]
+        },
+        {
+          "variant_id": "capsule",
+          "source": "rule_capsule",
+          "text": "保底事实句",
+          "felt_intensity": 0.45,
+          "spoken_units": 6,
+          "safe_duration_upper_bound_at_base_speed_sec": 1.8,
+          "minimum_required_speed_factor": 1.0,
+          "preserved_fact_ids": [
+            "fact:v1:r001_w02:kill:00090:5c3e9f21"
+          ]
+        }
+      ],
+      "semantic_state": "ok"
+    }
+  ],
+  "rounds": []
+}

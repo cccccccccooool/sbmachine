@@ -1,0 +1,3 @@
+{"tick":640,"round_no":1,"steamid":"1","name":"alpha","side":"T","x":1.0,"y":2.0,"z":3.0,"hp":100,"armor":100,"has_helmet":true,"has_kit":false,"active_weapon":"AK-47","ammo":30,"money":800,"callout":"TestArea","is_blind":false}
+{"tick":640,"round_no":1,"steamid":"2","name":"bravo","side":"CT","x":4.0,"y":5.0,"z":6.0,"hp":100,"armor":100,"has_helmet":true,"has_kit":true,"active_weapon":"M4A1-S","ammo":20,"money":800,"callout":"TestArea","is_blind":false}
+{"tick":8640,"round_no":2,"steamid":"3","name":"charlie","side":"CT","x":7.0,"y":8.0,"z":9.0,"hp":100,"armor":100,"has_helmet":true,"has_kit":false,"active_weapon":"M4A1-S","ammo":20,"money":800,"callout":"TestArea","is_blind":false}

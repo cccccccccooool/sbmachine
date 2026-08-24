@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "phase3a_mode": "llma_slicer_then_llma_analyze",
   "run_id": "fixture-current-neutral",
   "source_rounds_sha256": "fixture-only",
@@ -12,8 +12,40 @@
       "end_sec": 12.0,
       "avg_hype": 0.45,
       "scenes": [
-        {"t_start": 0.0, "t_end": 6.0, "scene": "default", "neutral": "T side establishes early control.", "hype": 0.2, "commentary_plan": {}},
-        {"t_start": 6.0, "t_end": 12.0, "scene": "unplanted", "neutral": "A confirmed opening kill changes the situation.", "hype": 0.7, "commentary_plan": {}}
+        {
+          "t_start": 0.0,
+          "t_end": 6.0,
+          "scene": "default",
+          "neutral": "T side establishes early control.",
+          "hype": 0.2,
+          "commentary_plan": {},
+          "fact_anchors": {
+            "players": [],
+            "teams": ["T"],
+            "numbers": [],
+            "events": [],
+            "results": [],
+            "locations": [],
+            "weapons": []
+          }
+        },
+        {
+          "t_start": 6.0,
+          "t_end": 12.0,
+          "scene": "unplanted",
+          "neutral": "A confirmed opening kill changes the situation.",
+          "hype": 0.7,
+          "commentary_plan": {},
+          "fact_anchors": {
+            "players": [],
+            "teams": [],
+            "numbers": [],
+            "events": ["kill"],
+            "results": [],
+            "locations": [],
+            "weapons": []
+          }
+        }
       ]
     }
   ]

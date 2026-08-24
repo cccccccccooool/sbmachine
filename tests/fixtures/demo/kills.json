@@ -1,0 +1,4 @@
+[
+  {"round_no": 1, "tick": 3200, "attacker": "alpha", "victim": "bravo", "weapon": "AK-47"},
+  {"round_no": 2, "tick": 10000, "attacker": "charlie", "victim": "delta", "weapon": "M4A1-S"}
+]

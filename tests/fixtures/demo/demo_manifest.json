@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "status": "complete",
+  "source_demo_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "tick_rate": 64,
+  "files": {
+    "demo_meta.json": {"rows": 4, "sha256": "42bbaf38a087ccda86d6c4aa897a15606d467402bedc10eb085db248c672a749"},
+    "rounds.json": {"rows": 2, "sha256": "60c5496edd09caf8915d5ea87272bc30c49f9cf01d92c4c298ce0e1149105710"},
+    "roster.json": {"rows": 4, "sha256": "ccacf60c46f29abb6e16fa4495708cdc387a5382165184c888bfcdfefc9ca457"},
+    "kills.json": {"rows": 2, "sha256": "e2537fb3e62636f737c17aef3cc93a7cd3a49cb5d289cc965dcb457bcedad4f2"},
+    "grenades.json": {"rows": 1, "sha256": "6cbf97f6898f5c7f85a618ff889a34a4bf524abda6b846c1dc261417203872b6"},
+    "damages.json": {"rows": 0, "sha256": "a5338d955b09046ec0b16f3a9625b7955c763aae07dc722e474e6078745f932f"},
+    "smokes.json": {"rows": 0, "sha256": "a5338d955b09046ec0b16f3a9625b7955c763aae07dc722e474e6078745f932f"},
+    "infernos.json": {"rows": 0, "sha256": "a5338d955b09046ec0b16f3a9625b7955c763aae07dc722e474e6078745f932f"},
+    "flashes.json": {"rows": 0, "sha256": "a5338d955b09046ec0b16f3a9625b7955c763aae07dc722e474e6078745f932f"},
+    "callouts.json": {"rows": 1, "sha256": "4624fd64b27f3131ede23f8506699c9cf3deebfb8d2172db826fb245b1fc2aed"},
+    "ticks.jsonl": {"rows": 3, "sha256": "497988dc90ed558883c7f29aae110a8f58542e7071f834698e5af6fd420142c0"}
+  }
+}

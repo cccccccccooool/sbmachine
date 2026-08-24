@@ -1,0 +1,51 @@
+{
+  "rounds_final": {
+    "rounds": [
+      {
+        "round_no": 1,
+        "start_sec": 0.0,
+        "end_sec": 90.0,
+        "scenes": [
+          {
+            "window_id": "r001_w03",
+            "voice_task_id": "r001_w03",
+            "render_slot": {
+              "start_sec": 12.0,
+              "end_sec": 15.0,
+              "start_tick": 360,
+              "end_tick": 450
+            },
+            "selected_variant_id": "compact",
+            "selected_text": "紧凑风格稿",
+            "actual_duration_sec": 2.74,
+            "applied_speed_factor": 1.15,
+            "audio_start_tick": 360,
+            "audio_end_tick": 442,
+            "fit_state": "fit",
+            "attempted_variants": ["primary", "compact"],
+            "render_unfit_reason": null
+          },
+          {
+            "window_id": "r001_w04",
+            "voice_task_id": "r001_w04",
+            "render_slot": {
+              "start_sec": 15.0,
+              "end_sec": 18.0,
+              "start_tick": 450,
+              "end_tick": 540
+            },
+            "selected_variant_id": null,
+            "selected_text": null,
+            "actual_duration_sec": null,
+            "applied_speed_factor": null,
+            "audio_start_tick": null,
+            "audio_end_tick": null,
+            "fit_state": "render_unfit",
+            "attempted_variants": ["primary", "compact", "capsule"],
+            "render_unfit_reason": "all candidates exceeded the fixed slot"
+          }
+        ]
+      }
+    ]
+  }
+}

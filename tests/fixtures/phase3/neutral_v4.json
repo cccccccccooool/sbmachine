@@ -1,0 +1,87 @@
+{
+  "schema_version": 4,
+  "phase3a_mode": "rule_neutral_renderer",
+  "run_id": "fixture-neutral-v4-run",
+  "source_rounds_sha256": "fixture-only-sha256",
+  "speech_metric_version": "speech_units_v1",
+  "video_path": "sample.mp4",
+  "map_name": "de_mirage",
+  "rounds": [
+    {
+      "round_no": 1,
+      "start_sec": 0.0,
+      "end_sec": 90.0,
+      "scenes": [
+        {
+          "window_id": "r001_w01",
+          "t_start": 0.0,
+          "t_end": 5.0,
+          "scene_kind": "intentional_empty",
+          "neutral": ""
+        },
+        {
+          "window_id": "r001_w03",
+          "t_start": 12.0,
+          "t_end": 15.0,
+          "scene": "default",
+          "neutral": "JDC击杀Tauson，CT随后拿下回合",
+          "neutral_source": "rule_template",
+          "neutral_renderer": {
+            "selected": "rule_template",
+            "policy": "template_default_v1"
+          },
+          "rule_capsule": "JDC击杀Tauson，CT胜",
+          "fact_catalog": [
+            {
+              "fact_id": "fact:v1:r001_w03:kill:00360:a13f92c1",
+              "kind": "kill",
+              "origin": "event",
+              "anchor_tick": 360,
+              "source_tick_range": [360, 360],
+              "canonical_clause": "JDC击杀Tauson",
+              "required": true,
+              "priority": 100
+            },
+            {
+              "fact_id": "fact:v1:r001_w03:round_result:00450:b721da80",
+              "kind": "round_result",
+              "origin": "derived",
+              "anchor_tick": 450,
+              "source_tick_range": [360, 450],
+              "canonical_clause": "CT拿下回合",
+              "required": true,
+              "priority": 90
+            }
+          ],
+          "required_fact_ids": [
+            "fact:v1:r001_w03:kill:00360:a13f92c1",
+            "fact:v1:r001_w03:round_result:00450:b721da80"
+          ],
+          "fact_anchors": {
+            "players": ["JDC", "Tauson"],
+            "teams": ["CT", "T"],
+            "numbers": [],
+            "events": ["kill"],
+            "results": ["round_win"],
+            "locations": [],
+            "weapons": []
+          },
+          "render_slot": {
+            "start_sec": 12.0,
+            "end_sec": 15.0,
+            "start_tick": 360,
+            "end_tick": 450,
+            "continuity_group_id": null,
+            "gap_policy": "independent_window"
+          },
+          "speech_budget": {
+            "target_units": 14,
+            "hard_units": 21,
+            "profile_id": "speech-profile-v1"
+          },
+          "char_budget": 15
+        }
+      ]
+    }
+  ]
+}

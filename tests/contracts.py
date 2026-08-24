@@ -3,6 +3,17 @@ from __future__ import annotations
 
 from sbmachine.neutral_contract import SCHEMA_VERSION, SUPPORTED_PHASE3A_MODES
 from sbmachine.preflight import validate_demo_artifacts, validate_final_manifest, validate_vision_timeline
+from sbmachine.voice_task_contract import (
+    CANDIDATE_POLICY_SPARSE_V1,
+    MAX_CANDIDATES_PER_SCENE,
+    SCHEMA_COMMENTARY_V3,
+    SCHEMA_NEUTRAL_V4,
+    SPEECH_METRIC_UNITS_V1,
+    VOICE_TASK_CONTRACT_VERSION,
+    validate_commentary_v3,
+    validate_final_voice_task,
+    validate_neutral_v4,
+)
 
 import argparse
 import json
@@ -44,7 +55,12 @@ def validate_neutral(data: Any) -> list[str]:
         last_end = None
         for sidx, scene in enumerate(scenes):
             label = f"phase3a.rounds[{ridx}].scenes[{sidx}]"
-            _require(scene, ["t_start", "t_end", "neutral", "commentary_plan"], label, errors)
+            _require(
+                scene,
+                ["t_start", "t_end", "neutral", "commentary_plan", "fact_anchors"],
+                label,
+                errors,
+            )
             if not isinstance(scene, dict):
                 continue
             start = _float_or_none(scene.get("t_start"))
@@ -55,6 +71,21 @@ def validate_neutral(data: Any) -> list[str]:
                 errors.append(f"{label} overlaps previous scene")
             if end is not None:
                 last_end = end
+            anchors = scene.get("fact_anchors")
+            if not isinstance(anchors, dict):
+                errors.append(f"{label}.fact_anchors must be an object")
+            else:
+                for key in (
+                    "players",
+                    "teams",
+                    "numbers",
+                    "events",
+                    "results",
+                    "locations",
+                    "weapons",
+                ):
+                    if not isinstance(anchors.get(key), list):
+                        errors.append(f"{label}.fact_anchors.{key} must be a list")
     return errors
 
 

@@ -1,0 +1,4 @@
+[
+  {"round_no": 1, "start_tick": 0, "freeze_end_tick": 640, "end_tick": 7680, "winner": "T"},
+  {"round_no": 2, "start_tick": 8000, "freeze_end_tick": 8640, "end_tick": 15360, "winner": "CT"}
+]
