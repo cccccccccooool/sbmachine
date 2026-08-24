@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import deque
+import math
 import re
 
 from vision_service.region_crops import box_from_norm, crop_frame
@@ -63,6 +64,7 @@ def read_ocr_text(
     padding: int = 0,
     accept_pattern: str = "",
     early_confidence: float | None = None,
+    min_accept_confidence: float = 0.0,
 ) -> dict:
     """识别单个 OCR 区域，一旦得到调用方可用的结果就提前停止。
 
@@ -72,18 +74,27 @@ def read_ocr_text(
     crop = crop_frame(frame, region.get("box", []), padding=padding)
     ocr_engine = _get_rapid_ocr()
     if ocr_engine is None:
-        return {"region": region, "raw_text": "", "confidence": 0.0, "engine": "unavailable:ImportError"}
+        return {
+            "region": region, "raw_text": "", "confidence": 0.0,
+            "engine": "unavailable:ImportError", "variant_inference_calls": 0,
+        }
     candidates: list[dict] = []
     accepted: dict | None = None
     engine = "rapidocr_onnxruntime"
+    variant_calls = 0
     for variant_name, image in _variants(crop):
         try:
+            variant_calls += 1
             result, _ = ocr_engine(image)
             text, confidence = _join_ocr_lines(result)
             if text:
                 candidate = {"text": text, "confidence": confidence, "variant": variant_name}
                 candidates.append(candidate)
-                pattern_accepted = bool(accept_pattern and re.search(accept_pattern, text))
+                pattern_accepted = bool(
+                    accept_pattern
+                    and confidence >= float(min_accept_confidence)
+                    and re.search(accept_pattern, text)
+                )
                 confidence_accepted = early_confidence is not None and confidence >= float(early_confidence)
                 if pattern_accepted or confidence_accepted:
                     accepted = candidate
@@ -94,6 +105,7 @@ def read_ocr_text(
     return {
         "region": region, "raw_text": best["text"], "confidence": best["confidence"],
         "variant": best["variant"], "candidates": candidates, "engine": engine,
+        "variant_inference_calls": variant_calls,
     }
 
 
@@ -155,8 +167,192 @@ def _first_timer_region(background: dict) -> dict | None:
 
 
 def _first_score_region(background: dict) -> dict | None:
-    regions = _regions_by_type(background, {"score", "score_area", "top_hud_score", "top_hud"})
+    regions = _regions_by_type(background, {"score", "score_area"})
     return max(regions, key=lambda item: float(item.get("confidence", 0.0))) if regions else None
+
+
+def _score_regions(background: dict) -> list[dict]:
+    """Return only single-side score boxes; top_hud is never a score candidate."""
+    regions = _regions_by_type(background, {"score", "score_area"})
+    return sorted(
+        regions,
+        key=lambda item: (
+            (float(item.get("box", [0, 0, 0, 0])[0]) + float(item.get("box", [0, 0, 0, 0])[2])) / 2.0,
+            -float(item.get("confidence", 0.0)),
+        ),
+    )
+
+
+def parse_timer_observation(
+    raw_text: object,
+    *,
+    video_time: float,
+    confidence: float = 0.0,
+    roi_source: str = "yolo_timer_region",
+    variant: str = "none",
+    min_confidence: float = 0.35,
+) -> dict:
+    """Parse OCR text into an uncommitted timer observation with one failure class."""
+    raw = str(raw_text or "").strip()
+    base = {
+        "kind": "timer", "video_time": round(float(video_time), 3), "raw_text": raw,
+        "normalized": "", "timer_sec": None, "ocr_confidence": float(confidence or 0.0),
+        "roi_source": str(roi_source), "variant": str(variant or "none"),
+        "parse_status": "ocr_empty" if not raw else "parse_rejected",
+        "alignment_status": "pending", "value": "",
+    }
+    if not raw:
+        return base
+    normalized = re.sub(r"\s+", "", raw.replace("\uFF1A", ":"))
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", normalized)
+    if not match:
+        base["normalized"] = normalized
+        return base
+    minutes, seconds = int(match.group(1)), int(match.group(2))
+    timer_sec = minutes * 60 + seconds
+    base["normalized"] = f"{minutes}:{seconds:02d}"
+    if seconds > 59 or not 0 <= timer_sec <= 115:
+        return base
+    base["timer_sec"] = timer_sec
+    base["parse_status"] = "parsed"
+    base["value"] = base["normalized"]
+    if float(confidence or 0.0) < float(min_confidence):
+        base["alignment_status"] = "state_rejected"
+    return base
+
+
+def unsampled_timer_observation(video_time: float, status: str, *, source: str = "") -> dict:
+    """Create an explicit timer status when OCR was not called."""
+    if status not in {"not_scheduled", "no_region", "budget_exhausted"}:
+        raise ValueError(f"invalid timer observation status: {status}")
+    return {
+        "kind": "timer", "video_time": round(float(video_time), 3), "raw_text": "",
+        "normalized": "", "timer_sec": None, "ocr_confidence": 0.0,
+        "roi_source": source or status, "variant": "none", "parse_status": status,
+        "alignment_status": status, "value": "", "variant_inference_calls": 0,
+    }
+
+
+def _normalize_score_digit(raw_text: object) -> str:
+    text = re.sub(r"\s+", "", str(raw_text or ""))
+    return "1" if text in {"I", "i", "L", "l", "+", "/", "\uFF0F"} else text
+
+
+def parse_score_side(raw_text: object, *, confidence: float, roi_source: str, max_value: int = 30) -> dict:
+    """Strictly parse one score box without extracting digits from longer text."""
+    raw = str(raw_text or "").strip()
+    normalized = _normalize_score_digit(raw)
+    parsed = bool(re.fullmatch(r"\d{1,2}", normalized))
+    value = int(normalized) if parsed else None
+    if value is not None and not 0 <= value <= int(max_value):
+        value, parsed = None, False
+    return {
+        "value": value, "raw_text": raw, "normalized": normalized,
+        "ocr_confidence": float(confidence or 0.0), "roi_source": roi_source,
+        "parse_status": "parsed" if parsed else ("ocr_empty" if not raw else "parse_rejected"),
+    }
+
+
+def normalize_score_observation(observation: object, *, video_time: float = 0.0) -> dict:
+    """Normalize live and legacy score debug payloads without promoting them to facts."""
+    if not isinstance(observation, dict):
+        return {
+            "kind": "score_observation",
+            "video_time": round(float(video_time), 3),
+            "left": None,
+            "right": None,
+            "pair_status": "not_scheduled",
+            "observation_status": "not_scheduled",
+            "ct": None,
+            "t": None,
+            "source": "not_scheduled",
+            "confidence": 0.0,
+            "variant_inference_calls": 0,
+        }
+    result = dict(observation)
+    is_live_observation = (
+        result.get("kind") == "score_observation"
+        or "left" in result
+        or "right" in result
+    )
+    if not is_live_observation and ("ct" in result or "t" in result):
+        result.update({
+            "kind": "score_observation",
+            "video_time": round(float(result.get("video_time", video_time)), 3),
+            "left": None,
+            "right": None,
+            "pair_status": "legacy_unverified",
+            "observation_status": "legacy_unverified",
+            "legacy_ct": result.get("ct"),
+            "legacy_t": result.get("t"),
+        })
+    else:
+        result.setdefault("kind", "score_observation")
+        result.setdefault("video_time", round(float(video_time), 3))
+        result.setdefault("left", None)
+        result.setdefault("right", None)
+        result.setdefault("pair_status", "incomplete")
+        result.setdefault("observation_status", "observed")
+    result["ct"] = None
+    result["t"] = None
+    result.setdefault("source", "score_observation")
+    result.setdefault("confidence", 0.0)
+    result.setdefault("variant_inference_calls", 0)
+    return result
+
+
+class ScorePairConsensus:
+    """Build short-window consensus without mapping screen sides to CT/T."""
+
+    def __init__(self, window: int = 5, min_votes: int | None = None) -> None:
+        self.window = max(1, int(window))
+        self.min_votes = int(min_votes) if min_votes is not None else max(1, math.ceil(self.window * 0.6))
+        self._items: deque[dict] = deque(maxlen=self.window)
+
+    def update(self, observation: dict) -> dict:
+        self._items.append(dict(observation))
+        usable = [
+            item for item in self._items
+            if isinstance(item.get("left"), dict)
+            and isinstance(item.get("right"), dict)
+            and item["left"].get("value") is not None
+            and item["right"].get("value") is not None
+        ]
+        result = dict(observation)
+        if len(self._items) < self.window:
+            result["pair_status"] = (
+                "incomplete" if observation.get("pair_status") == "incomplete" else "pending_consensus"
+            )
+            return result
+        weights: dict[tuple[int, int], float] = {}
+        votes: dict[tuple[int, int], int] = {}
+        for item in usable:
+            pair = (int(item["left"]["value"]), int(item["right"]["value"]))
+            confidence = (
+                float(item["left"].get("ocr_confidence", 0.0))
+                + float(item["right"].get("ocr_confidence", 0.0))
+            ) / 2.0
+            weights[pair] = weights.get(pair, 0.0) + confidence
+            votes[pair] = votes.get(pair, 0) + 1
+        if not votes:
+            result["pair_status"] = "incomplete"
+            return result
+        ranked = sorted(votes, key=lambda pair: (votes[pair], weights[pair], pair), reverse=True)
+        winner = ranked[0]
+        tied = len(ranked) > 1 and votes[ranked[1]] == votes[winner] and weights[ranked[1]] == weights[winner]
+        if votes[winner] < self.min_votes or tied:
+            result["pair_status"] = "conflict"
+            return result
+        selected = next(
+            item for item in reversed(usable)
+            if int(item["left"]["value"]) == winner[0] and int(item["right"]["value"]) == winner[1]
+        )
+        result.update({
+            "left": dict(selected["left"]), "right": dict(selected["right"]),
+            "pair_status": "accepted_for_alignment",
+            "confidence": round(weights[winner] / votes[winner], 3),
+        })
+        return result
 
 
 def _resolve_ocr_box(yolo_region: dict | None, fixed_cfg: dict, frame_shape, yolo_source_name: str = "yolo") -> tuple[dict | None, str]:
@@ -215,22 +411,62 @@ def pov_white_text_ratio(frame, region: dict, pov_ocr_config: dict, crop_padding
         return 0.0
 
 
-def _detect_score_ocr(frame, yolo_background: dict | None, score_ocr_config: dict, crop_padding: int) -> dict:
-    yolo_region = _first_score_region(yolo_background or {})
-    region, source = _resolve_ocr_box(yolo_region, score_ocr_config, frame.shape, "yolo_score_region")
-    if not region:
-        return {"ct": None, "t": None, "raw": "", "source": source, "confidence": 0.0}
-    ocr = read_ocr_text(
-        frame,
-        region,
-        padding=crop_padding,
-        accept_pattern=r"\d+\s*[:\-]\s*\d+",
-    )
-    raw = str(ocr.get("raw_text", ""))
-    match = re.search(r"(\d+)\s*[:\-]\s*(\d+)", raw)
+def _detect_score_ocr(
+    frame,
+    yolo_background: dict | None,
+    score_ocr_config: dict,
+    crop_padding: int,
+    *,
+    video_time: float = 0.0,
+) -> dict:
+    """Read left and right score boxes independently; never fill a missing side."""
+    regions = _score_regions(yolo_background or {})
+    if not regions:
+        return {
+            "kind": "score_observation", "video_time": round(float(video_time), 3),
+            "left": None, "right": None, "pair_status": "incomplete", "ct": None, "t": None,
+            "source": "no_region:yolo_score_pair", "confidence": 0.0, "variant_inference_calls": 0,
+        }
+    if len(regions) >= 2:
+        selected_regions = {"left": regions[0], "right": regions[-1]}
+    else:
+        box = regions[0].get("box", [0, 0, 0, 0])
+        center = (float(box[0]) + float(box[2])) / 2.0
+        side = "left" if center < float(frame.shape[1]) / 2.0 else "right"
+        selected_regions = {side: regions[0]}
+    max_value = int(score_ocr_config.get("max_observed_value", 30))
+    min_confidence = float(score_ocr_config.get("min_confidence", 0.35))
+    parsed_sides: dict[str, dict | None] = {"left": None, "right": None}
+    variant_calls = 0
+    for side, region in selected_regions.items():
+        ocr = read_ocr_text(
+            frame,
+            region,
+            padding=crop_padding,
+            accept_pattern=r"^\s*(?:\d{1,2}|[IiLl+\uFF0F/])\s*$",
+            min_accept_confidence=min_confidence,
+        )
+        variant_calls += int(ocr.get("variant_inference_calls", 0))
+        parsed = parse_score_side(
+            ocr.get("raw_text", ""),
+            confidence=float(ocr.get("confidence", 0.0)),
+            roi_source=f"yolo_score_{side}",
+            max_value=max_value,
+        )
+        if parsed["ocr_confidence"] < min_confidence and parsed["parse_status"] == "parsed":
+            parsed["parse_status"], parsed["value"] = "state_rejected", None
+        parsed_sides[side] = parsed
+    complete = all(isinstance(side, dict) and side["value"] is not None for side in parsed_sides.values())
+    observed = [side for side in parsed_sides.values() if isinstance(side, dict)]
+    confidence = sum(side["ocr_confidence"] for side in observed) / len(observed)
     return {
-        "ct": int(match.group(1)) if match else None, "t": int(match.group(2)) if match else None,
-        "raw": raw, "source": source, "confidence": ocr.get("confidence", 0.0),
+        "kind": "score_observation", "video_time": round(float(video_time), 3),
+        "left": parsed_sides["left"], "right": parsed_sides["right"],
+        "pair_status": "pending_consensus" if complete else "incomplete",
+        "observation_status": "observed",
+        "ct": None, "t": None, "source": "yolo_score_pair", "confidence": round(confidence, 3),
+        "variant_inference_calls": variant_calls,
+        "_regions": dict(selected_regions),
     }
 
 

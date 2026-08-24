@@ -1,0 +1,22 @@
+{
+  "name": "wanjiji",
+  "display_name": "玩机器machine",
+  "character": "celebrity",
+  "research_profile": "budget-unfriendly",
+  "classification": {
+    "language": "zh-CN"
+  },
+  "profile": "CS:GO/CS2职业解说员，斗鱼6657主播。本名刘亦博，1996年生。2018完美盛典双料得主，2025福布斯卓越电竞解说。以中西结合解说风格著称——融合英文解说的情绪渲染与中文解说的战术分析。标志性特征：成语大师、复读式节奏、悖论体幽默、二次元文化底色。",
+  "tags": ["CS:GO", "CS2", "电竞解说", "直播", "成语大师", "斗鱼"],
+  "knowledge_sources": [
+    "本地905条解说语料(all_scored_sentences_levels.jsonl, 标注兴奋度+时间戳)",
+    "E:\\video\\ 10个解说视频(43GB, 仅游戏画面)",
+    "B站空间 https://space.bilibili.com/2183230",
+    "斗鱼鱼吧API https://www.douyu.com/wgapi/yubanc/api/feed/getUserFeedList?uid=61899676",
+    "微博 https://weibo.com/u/5974900255",
+    "B5明星主播专访(2016)",
+    "萌娘百科条目",
+    "NGA/虎扑/贴吧社区讨论",
+    "2025福布斯中国电竞30评选"
+  ]
+}

@@ -1,11 +1,23 @@
 """Phase 4 音视频辅助函数：TTS 拼接到静音时间轴、逐局视频混音、WAV/媒体探测。"""
 from __future__ import annotations
 
-import json
 import math
 import subprocess
 import wave
 from pathlib import Path
+
+
+_TICK_FPS = 30.0
+
+
+def audio_end_tick(duration_sec: float, start_tick: int, fps: float = _TICK_FPS) -> int:
+    """按 Phase4 固定 tick 口径（30fps）把 PCM 时长折算为结束 tick。"""
+    return int(start_tick) + int(round(float(duration_sec) * float(fps)))
+
+
+def check_scene_slot_fit(duration_sec: float, start_tick: int, end_tick: int, fps: float = _TICK_FPS) -> bool:
+    """固定 slot 验证：音频结束 tick 不得越过 render_slot.end_tick。"""
+    return float(duration_sec) >= 0.0 and audio_end_tick(duration_sec, start_tick, fps) <= int(end_tick)
 
 
 def _run_ffmpeg(args: list[str]) -> None:
@@ -13,27 +25,13 @@ def _run_ffmpeg(args: list[str]) -> None:
 
 
 def _probe_media(path: Path) -> tuple[bool, float]:
-    result = subprocess.run(
-        [
-            "ffprobe", "-v", "error", "-print_format", "json",
-            "-show_streams", "-show_format", str(path),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    payload = json.loads(result.stdout)
-    streams = payload.get("streams", [])
-    has_audio = any(stream.get("codec_type") == "audio" for stream in streams)
-    video = next((stream for stream in streams if stream.get("codec_type") == "video"), {})
-    raw_duration = video.get("duration") or payload.get("format", {}).get("duration")
-    try:
-        duration = float(raw_duration)
-    except (TypeError, ValueError) as exc:
-        raise RuntimeError(f"cannot determine video duration: {path}") from exc
-    if not math.isfinite(duration) or duration <= 0:
+    from sbmachine.media_probe import probe_media
+
+    result = probe_media(path)
+    duration = result.get("duration_sec")
+    if not isinstance(duration, (int, float)) or not math.isfinite(float(duration)) or float(duration) <= 0:
         raise RuntimeError(f"invalid video duration {duration!r}: {path}")
-    return has_audio, duration
+    return bool(result.get("has_audio")), float(duration)
 
 
 def _mux_round_video(
@@ -170,4 +168,124 @@ def _assemble_scene_wav(
         wav.setparams(params)
         wav.writeframes(canvas)
     return durations
+
+
+def assemble_scene_canvas_v2(
+    scenes: list[dict],
+    output_path: Path,
+    round_start_sec: float,
+    round_end_sec: float,
+    *,
+    default_sample_rate: int = 32000,
+    timeline_origin_sec: float = 0.0,
+) -> dict:
+    """Place strict execution assets on explicit asset/round/timeline samples.
+
+    The legacy assembler above remains unchanged. This entry only accepts
+    already-rendered WAV assets and rejects format mismatch or any out-of-slot
+    frame range; it never truncates an asset to force a fit.
+    """
+    from sbmachine.media_clock import round_half_even, seconds_to_sample
+
+    if not isinstance(scenes, list):
+        raise ValueError("strict canvas scenes must be a list")
+    if not math.isfinite(float(round_start_sec)) or not math.isfinite(float(round_end_sec)) or round_start_sec >= round_end_sec:
+        raise ValueError("strict canvas requires finite round_start_sec < round_end_sec")
+    if int(default_sample_rate) <= 0:
+        raise ValueError("strict canvas sample rate must be positive")
+
+    params: wave._wave_params | None = None
+    loaded: list[tuple[dict, bytes, int, wave._wave_params]] = []
+    for index, scene in enumerate(scenes):
+        if not isinstance(scene, dict):
+            raise ValueError(f"strict canvas scene[{index}] must be an object")
+        audio_value = scene.get("audio_asset") or scene.get("audio_path")
+        if not isinstance(audio_value, str) or not audio_value:
+            raise ValueError(f"strict canvas scene[{index}] is missing audio_asset")
+        audio_path = Path(audio_value)
+        current_params, frame_count, _ = _wav_info(audio_path)
+        if params is None:
+            params = current_params
+        elif current_params[:3] != params[:3] or current_params.comptype != params.comptype:
+            raise RuntimeError(f"strict canvas WAV format mismatch: {audio_path}")
+        with wave.open(str(audio_path), "rb") as wav:
+            frames = wav.readframes(frame_count)
+        loaded.append((scene, frames, frame_count, current_params))
+
+    if params is None:
+        sample_rate = int(default_sample_rate)
+        channels = 1
+        sample_width = 2
+        comptype = "NONE"
+        canvas_frames = round_half_even((float(round_end_sec) - float(round_start_sec)) * sample_rate)
+        if canvas_frames <= 0:
+            raise ValueError("strict canvas round duration must produce positive frames")
+        canvas = bytearray(b"\x00" * (channels * sample_width * canvas_frames))
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(output_path), "wb") as wav:
+            wav.setnchannels(channels)
+            wav.setsampwidth(sample_width)
+            wav.setframerate(sample_rate)
+            wav.setcomptype(comptype, "not compressed")
+            wav.writeframes(canvas)
+        return {
+            "sample_rate": sample_rate,
+            "round_canvas_limit_sample": canvas_frames,
+            "units": [],
+        }
+
+    sample_rate = params.framerate
+    if sample_rate <= 0:
+        raise ValueError("strict canvas WAV sample rate must be positive")
+    canvas_frames = round_half_even((float(round_end_sec) - float(round_start_sec)) * sample_rate)
+    if canvas_frames <= 0:
+        raise ValueError("strict canvas round duration must produce positive frames")
+    bytes_per_frame = params.nchannels * params.sampwidth
+    silence_byte = b"\x80" if params.sampwidth == 1 else b"\x00"
+    canvas = bytearray(silence_byte * bytes_per_frame * canvas_frames)
+    result_units: list[dict] = []
+    for index, (scene, frames, frame_count, current_params) in enumerate(loaded):
+        try:
+            slot_start_sec = float(scene["slot_start_sec"])
+            slot_end_sec = float(scene["slot_end_sec"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"strict canvas scene[{index}] is missing slot seconds") from exc
+        relative_start = slot_start_sec - float(round_start_sec)
+        round_start_sample = round_half_even(relative_start * sample_rate)
+        round_slot_end_sample = round_half_even((slot_end_sec - float(round_start_sec)) * sample_rate)
+        round_end_sample = round_start_sample + frame_count
+        if round_start_sample < 0 or round_slot_end_sample > canvas_frames or round_end_sample > round_slot_end_sample:
+            raise RuntimeError(f"strict canvas scene {scene.get('unit_id')!r} exceeds its fixed slot")
+        start_byte = round_start_sample * bytes_per_frame
+        canvas[start_byte:start_byte + len(frames)] = frames
+        timeline_start_sample = seconds_to_sample(slot_start_sec, sample_rate, timeline_origin_sec=timeline_origin_sec)
+        timeline_end_sample = timeline_start_sample + frame_count
+        slot_timeline_end_sample = seconds_to_sample(slot_end_sec, sample_rate, timeline_origin_sec=timeline_origin_sec)
+        timeline_canvas_end_sample = seconds_to_sample(round_end_sec, sample_rate, timeline_origin_sec=timeline_origin_sec)
+        result_units.append({
+            "unit_id": scene.get("unit_id"),
+            "asset_start_frame": 0,
+            "asset_end_frame": frame_count,
+            "asset_frame_count": frame_count,
+            "sample_rate": current_params.framerate,
+            "round_canvas_start_sample": round_start_sample,
+            "round_canvas_end_sample": round_end_sample,
+            "round_slot_end_sample": round_slot_end_sample,
+            "round_canvas_limit_sample": canvas_frames,
+            "timeline_start_sample": timeline_start_sample,
+            "timeline_end_sample": timeline_end_sample,
+            "slot_timeline_end_sample": slot_timeline_end_sample,
+            "timeline_canvas_end_sample": timeline_canvas_end_sample,
+            "fit_state": "fit",
+        })
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(output_path), "wb") as wav:
+        wav.setparams(params)
+        wav.writeframes(canvas)
+    return {
+        "sample_rate": sample_rate,
+        "round_canvas_limit_sample": canvas_frames,
+        "units": result_units,
+    }
 

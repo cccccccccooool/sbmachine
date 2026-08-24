@@ -1,8 +1,7 @@
 """第二阶段：构建背景信息行的辅助函数。"""
 from __future__ import annotations
 
-from sbmachine.time_align import parse_timer_seconds
-
+from sbmachine.phase2_ocr import normalize_score_observation
 
 def _demo_round_hint(round_record) -> int:
     """读取视频回合已解析出的 demo 回合号，缺失或非法时抛错（fail-closed）。"""
@@ -84,6 +83,15 @@ def _player_state_with_callouts(demo: DemoQuery, tick: int, round_no: int) -> li
                 "z": z,
                 "money": row.get("money"),
                 "ammo": row.get("ammo"),
+                "yaw": row.get("yaw"),
+                "pitch": row.get("pitch"),
+                "is_walking": bool(row.get("is_walking", False)),
+                "is_airborne": bool(row.get("is_airborne", False)),
+                "is_ducking": bool(row.get("is_ducking", False)),
+                "is_scoped": bool(row.get("is_scoped", False)),
+                "zoom_level": row.get("zoom_level"),
+                "in_bomb_zone": bool(row.get("in_bomb_zone", False)),
+                "money_spent_this_round": row.get("money_spent_this_round"),
             }
         )
     return players
@@ -140,9 +148,13 @@ def build_background_info(
     align_warnings: list[str] | None = None,
 ) -> tuple[dict, int]:
     """汇总某一帧的时间/POV/事件信息，构建单帧背景数据行，返回 (背景字典, tick)。"""
-    timer = str(timer_ocr_result.get("value", "") or "").strip()
-    if timer:
-        align.add_anchor(video_time, timer)
+    if not align.is_locked:
+        raise ValueError("Phase2 background projection requires a locked OCR alignment")
+    timer = (
+        str(timer_ocr_result.get("normalized", timer_ocr_result.get("value", "")) or "").strip()
+        if timer_ocr_result.get("alignment_status") == "accepted"
+        else ""
+    )
     tick = align.to_tick(video_time)
     players = _player_state_with_callouts(
         demo,
@@ -169,11 +181,7 @@ def build_background_info(
         pov_source = pov_crop_source
         view = "player"
 
-    timer_seconds = parse_timer_seconds(timer)
-    if timer_seconds is not None:
-        relative_sec = 115.0 - timer_seconds
-    else:
-        relative_sec = align.relative_sec_for_tick(tick)
+    relative_sec = align.relative_sec_for_tick(tick)
 
     # 标记这一帧属于回合的哪一部分。
     if relative_sec < 0:
@@ -185,20 +193,54 @@ def build_background_info(
 
     prev = prev_tick if prev_tick is not None else tick
     kills = demo.kills_between(prev, tick)
-    utilities = demo.utilities_between(prev, tick)
+    if hasattr(demo, "utility_throws_between"):
+        utilities = [
+            item
+            for item in demo.utility_throws_between(prev, tick)
+            if int(item.get("throw_tick", -1)) > prev
+        ]
+    else:
+        utilities = [
+            item
+            for item in demo.utilities_between(prev, tick)
+            if int(
+                item.get("throw_tick")
+                if item.get("_event") == "throw"
+                else item.get("det_tick", -1)
+            )
+            > prev
+        ]
     damages = demo.damages_between(prev, tick) if hasattr(demo, "damages_between") else []
     flashes = demo.flashes_between(prev, tick) if hasattr(demo, "flashes_between") else []
     # 当前 tick 仍在生效的烟雾 / 火焰（作用域为整回合）
     smokes_now = demo.smokes_active_at(tick) if hasattr(demo, "smokes_active_at") else []
     infernos_now = demo.infernos_active_at(tick) if hasattr(demo, "infernos_active_at") else []
+    weapon_fires = (
+        demo.weapon_fires_between(prev, tick)
+        if hasattr(demo, "weapon_fires_between")
+        else []
+    )
+    item_equips = (
+        demo.item_equips_between(prev, tick)
+        if hasattr(demo, "item_equips_between")
+        else []
+    )
+    event_snapshots = (
+        demo.event_snapshots_for_kills(kills)
+        if hasattr(demo, "event_snapshots_for_kills")
+        else []
+    )
     plant_tick = round_meta.get("bomb_planted_tick")
     effective_timer_source = timer_crop_source if timer else ""
+    score_debug = normalize_score_observation(score_ocr_result, video_time=video_time)
+    score_debug.pop("_regions", None)
     bg = {
         "when": {
             "video_time": round(float(video_time), 3),
             "timer": timer,
             "timer_source": effective_timer_source,
             "tick": tick,
+            "tick_rate": float(getattr(demo, "tick_rate", align.tick_rate)),
             "round_no": int(round_meta.get("round_no", 0)),
             "relative_sec": round(float(relative_sec), 3),
             "phase": phase,
@@ -225,13 +267,19 @@ def build_background_info(
             "flashes":   flashes,
             "smokes_active":   smokes_now,
             "infernos_active": infernos_now,
+            "weapon_fires": weapon_fires,
+            "item_equips": item_equips,
+            "event_snapshots": event_snapshots,
             "c4": {
                 "planted":   _c4_planted_at(round_meta, tick),
                 "plant_tick": plant_tick,
                 "begin_defuse_tick": round_meta.get("bomb_begin_defuse_tick"),
                 "defuser_has_kit":   round_meta.get("defuser_has_kit"),
+                "bomb_site": round_meta.get("bomb_site"),
+                "bomb_exploded_tick": round_meta.get("bomb_exploded_tick"),
+                "bomb_defused_tick": round_meta.get("bomb_defused_tick"),
             },
-            "score_ocr": score_ocr_result if isinstance(score_ocr_result, dict) else {"ct": None, "t": None, "raw": "", "source": "background", "confidence": 0.0},
+            "score_ocr": score_debug,
         },
     }
     return bg, tick

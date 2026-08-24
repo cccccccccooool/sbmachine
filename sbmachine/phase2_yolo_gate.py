@@ -28,7 +28,7 @@ class YoloGate:
         self.config = config or {}
         self.model_path = str(self.config.get("model_path", "")).strip()
         if not self.model_path:
-            raise ValueError("Phase 2 UI YOLO requires vision.yolo.model_path")
+            raise ValueError("Phase 2 UI YOLO requires yolo.yolo.model_path")
 
         resolved_path = Path(self.model_path)
         if not resolved_path.is_absolute():
@@ -36,21 +36,40 @@ class YoloGate:
             resolved_path = PROJECT_ROOT / resolved_path
 
         if not resolved_path.is_file():
-            raise FileNotFoundError(f"vision.yolo.model_path does not exist: {resolved_path}")
+            raise FileNotFoundError(f"yolo.yolo.model_path does not exist: {resolved_path}")
 
         self.model_path = str(resolved_path)
+        self.device = str(self.config.get("device", "auto") or "auto")
         try:
             from ultralytics import YOLO
         except ImportError as exc:
             raise RuntimeError("Missing ultralytics. Install it before running Phase 2 UI YOLO.") from exc
         self.model = YOLO(self.model_path)
-        self.model.to("cpu")
+        self._place_model(self.device)
         self.conf_threshold = float(self.config.get("conf_threshold", 0.35))
         self.skip_labels = set(self.config.get("skip_labels", []))
         self.pov_name_labels = {"pov_name", "pov_name_area", "pov_player_bar", "pov_marker_bar"}
         self.ocr_labels = {"timer", "timer_area", "round_timer"}
         self.c4_labels = {"c4", "c4_area", "c4_status"}
         self.coordinate_only_labels = {"minimap", "radar", "minimap_area", "top_hud", "top_ui", "score", "score_area"}
+
+    def _place_model(self, device: str) -> None:
+        """把 YOLO 放到目标设备。auto=cuda 可用则 GPU，否则 CPU；显式 cpu/cuda 原样执行。"""
+        if device == "cpu":
+            self.model.to("cpu")
+            return
+        if device in ("auto", ""):
+            try:
+                import torch
+
+                if torch.cuda.is_available():
+                    self.model.to("cuda")
+                    return
+            except Exception:
+                pass
+            self.model.to("cpu")
+            return
+        self.model.to(device)
 
     def decide(self, frame: Any) -> GateDecision:
         if self._is_near_white(frame):

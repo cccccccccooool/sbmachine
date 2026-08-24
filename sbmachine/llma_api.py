@@ -1,6 +1,8 @@
 """Phase 3a 的 OpenAI 兼容 API 后端。"""
 from __future__ import annotations
 
+import os
+
 from sbmachine.common import _output_cap
 from sbmachine.llm_shim import _execute_openai_chat
 
@@ -24,13 +26,16 @@ def generate(
     system_prompt: str | None = None,
     max_tokens: int | None = None,
     log_ctx: dict | None = None,
+    response_format: dict | None = None,
 ) -> str:
     """向 Phase 3a 的 OpenAI 兼容后端发起一次生成请求。"""
     cap = _output_cap(llm_cfg, max_tokens)
     timeout = int(llm_cfg.get("timeout_sec", 120))
-    print(f"  >> [LLM API] 正在请求 api 后端{_ctx_hint(log_ctx)}... (timeout: {timeout}s)", flush=True)
+    if os.getenv("AI6657_DEBUG_PHASE3"):
+        print(f"  >> [LLM API] 正在请求 api 后端{_ctx_hint(log_ctx)}... (timeout: {timeout}s)", flush=True)
     messages = [
         {"role": "system", "content": system_prompt or ""},
         {"role": "user", "content": prompt},
     ]
-    return _execute_openai_chat(messages, llm_cfg, max_tokens=cap, log_ctx=log_ctx, secret_scope="llma")
+    return _execute_openai_chat(messages, llm_cfg, max_tokens=cap, log_ctx=log_ctx, secret_scope="llma",
+                                response_format=response_format)

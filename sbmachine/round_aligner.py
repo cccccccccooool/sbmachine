@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -25,14 +26,15 @@ def _round_no_from_score(ct: int | None, t: int | None) -> int | None:
 
 def align_l0_score(segment: dict, score_ocr_frames: list[dict]) -> int | None:
     """L0:从 score OCR 帧列表里取众数得绝对回合号。"""
-    candidates: dict[int, int] = {}
+    candidates: Counter[int] = Counter()
     for frame in score_ocr_frames:
         rn = _round_no_from_score(frame.get("ct"), frame.get("t"))
         if rn is not None and rn > 0:
-            candidates[rn] = candidates.get(rn, 0) + 1
+            candidates[rn] += 1
     if not candidates:
         return None
-    return max(candidates, key=lambda k: candidates[k])
+    # most_common 对平票保留插入序（等价于原 max(dict, key=...) 取先遇到的键）
+    return candidates.most_common(1)[0][0]
 
 
 # ── L1: duration DP (Needleman-Wunsch) ──

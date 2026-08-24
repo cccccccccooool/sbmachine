@@ -6,7 +6,21 @@ from collections import Counter, deque
 from dataclasses import dataclass
 
 FINAL_EMOTIONS = ("平述", "激动", "惊叹")
-_ALL_EMOTION_TAGS = re.compile(r"\[(?:平述|平叙|激动|惊叹|紧张|惋惜)\]")
+_ALL_EMOTION_TAGS = re.compile(r"\[(平述|平叙|激动|惊叹|紧张|惋惜)\]")
+# 档序：平述(0) < 激动(1) < 惊叹(2)；非三档历史标签（平叙/紧张/惋惜）按平述档处理
+_TAG_RANK = {"平述": 0, "平叙": 0, "紧张": 0, "惋惜": 0, "激动": 1, "惊叹": 2}
+# capsule 情绪强度上限（§计划书阶段3门禁）：规则层 capsule 最多 0.45 档
+CAPSULE_INTENSITY_CEILING = 0.45
+
+
+def capsule_emotion(hard_intensity: float, *, ceiling: float = CAPSULE_INTENSITY_CEILING) -> tuple[str, float]:
+    """capsule 的情绪裁决：由规则层给出，取最低硬事实档位（平述），不随 LLM-B 放大。
+
+    返回 (标签, 强度)。强度 = min(ceiling, hard_intensity)：即使上游硬事实强度
+    很高，capsule 也不超过 0.45 上限（§9.4 示例 0.45）。
+    """
+    score = round(min(_clamp01(ceiling), _clamp01(hard_intensity)), 3)
+    return "平述", score
 
 
 def _clamp01(value: float) -> float:
@@ -32,11 +46,27 @@ def weighted_intensity(samples: list[tuple[float, float]]) -> float:
 
 
 def normalize_commentary_emotion(commentary: str, final_label: str) -> str:
-    """剥掉解说文本里的所有中间情绪标签，只保留融合后的最终标签作前缀。"""
+    """把句内情绪标签钳制到最终档以内，保留 LLMB 写出的句内情绪起伏。
+
+    规则：首段（首个标签或无标签的开头文本）对齐 final_label；其后每个句内标签
+    取 min(该标签档, final_label 档)。输出保证以 [标签] 开头，空段会被清理。
+    """
     if final_label not in FINAL_EMOTIONS:
         raise ValueError(f"unsupported final emotion: {final_label}")
-    body = _ALL_EMOTION_TAGS.sub("", str(commentary)).strip()
-    return f"[{final_label}]{body}"
+    final_rank = FINAL_EMOTIONS.index(final_label)
+    pieces = _ALL_EMOTION_TAGS.split(str(commentary))
+    segments: list[tuple[int, str]] = []
+    lead = pieces[0].strip()
+    if lead:
+        segments.append((final_rank, lead))
+    for index in range(1, len(pieces), 2):
+        text = pieces[index + 1].strip()
+        if text:
+            segments.append((min(_TAG_RANK[pieces[index]], final_rank), text))
+    if not segments:
+        return f"[{final_label}]"
+    segments[0] = (final_rank, segments[0][1])
+    return "".join(f"[{FINAL_EMOTIONS[rank]}]{text}" for rank, text in segments)
 
 
 @dataclass(frozen=True)

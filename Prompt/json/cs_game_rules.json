@@ -26,8 +26,29 @@
                                             ],
                     "global_fact_types":  [
                                               "bomb_planted",
-                                              "defuse_started"
+                                              "defuse_started",
+                                              "bomb_exploded",
+                                              "bomb_defused",
+                                              "round_end",
+                                              "team_eliminated"
                                           ],
+                    "hard_fact_types":  [
+                                             "kill",
+                                             "bomb_planted",
+                                             "defuse_started",
+                                             "bomb_exploded",
+                                             "bomb_defused",
+                                             "round_end",
+                                             "team_eliminated"
+                                         ],
+                    "suppressed_reasons":  [
+                                                "lower_priority",
+                                                "already_narrated",
+                                                "ordinary_kill_quota",
+                                                "budget_compacted",
+                                                "duplicate_event",
+                                                "off_pov_lower_rank"
+                                            ],
                     "local_only_types":  [
                                              "kill",
                                              "utility_throw",
@@ -35,6 +56,22 @@
                                              "effective_flash"
                                          ]
                 },
+    "exchange":  {
+                     "max_gap_sec":  4.0,
+                     "min_kills":  2,
+                     "critical_min_kills":  3,
+                     "critical_priority":  0.9,
+                     "key_priority":  0.72
+                 },
+    "topic_priority":  {
+                           "terminal":  0,
+                           "critical_exchange":  1,
+                           "key_exchange":  2,
+                           "ordinary_kill":  3,
+                           "utility":  4,
+                           "verified_spatial":  5,
+                           "setup_or_silence":  6
+                       },
     "weapon_classes":  {
                            "long_guns_for_mismatch":  [
                                                           "AK-47",
@@ -81,9 +118,61 @@
                            "spray_transfer_min_angle_deg":  15.0,
                            "narrate_priority_threshold":  0.65
                        },
+    "rule_compare":  {
+                          "_comment":  "Fail-closed deterministic comparisons between Phase2 facts and Phase3 topic selection. POV bonuses apply only to an observed player POV; unavailable POV receives no bonus.",
+                          "point_blank_max_units":  120.0,
+                          "long_range_min_units":  1000.0,
+                          "backstab_victim_away_min_deg":  100.0,
+                          "moving_kill_min_units_per_sec":  120.0,
+                          "flick_lookback_sec":  0.5,
+                          "flick_min_yaw_delta_deg":  25.0,
+                          "one_tap_lookback_sec":  1.5,
+                          "switch_death_window_sec":  1.5,
+                          "switch_primary_hold_min_sec":  10.0,
+                          "rule_highlight_min_priority":  0.7,
+                          "match_point_base_score":  12,
+                          "overtime_match_point_step":  3,
+                          "late_tie_min_score":  10,
+                          "spend_context_min_players_per_side":  3,
+                          "spend_gap_low_max":  5000,
+                          "spend_gap_high_min":  12000,
+                          "round_context_priorities":  {
+                                                            "ct_match_point":  0.76,
+                                                            "t_match_point":  0.76,
+                                                            "overtime_tie":  0.78,
+                                                            "late_tie":  0.72,
+                                                            "lower_spend_side_kill":  0.74
+                                                        },
+                          "pov_priority_bonus":  {
+                                                     "killer":  0.12,
+                                                     "victim":  0.08,
+                                                     "observer":  -0.04,
+                                                     "unavailable":  0.0
+                                                 },
+                          "priorities":  {
+                                             "air_noscope":  0.98,
+                                             "jump_kill":  0.88,
+                                             "blind_kill":  0.86,
+                                             "backstab":  0.84,
+                                             "victim_airborne":  0.82,
+                                             "unaware_kill":  0.8,
+                                             "one_tap":  0.8,
+                                             "flick_shot":  0.79,
+                                             "caught_switching":  0.78,
+                                             "through_smoke":  0.76,
+                                             "wallbang":  0.76,
+                                             "no_scope":  0.76,
+                                             "point_blank":  0.72,
+                                             "long_range":  0.7,
+                                             "moving_kill":  0.68,
+                                             "scoped_kill":  0.6,
+                                             "headshot":  0.55
+                                         }
+                      },
     "narration":  {
                       "max_kill_topics_per_window":  1,
                       "max_plain_single_kills_per_round":  2,
+                      "max_utility_windows_per_round":  2,
                       "max_supporting_actions":  2,
                       "hard_fact_weight":  0.8,
                       "commentary_plan_max_chars":  1200,

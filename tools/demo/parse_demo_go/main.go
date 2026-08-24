@@ -48,10 +48,11 @@ import (
 // ── output structs ────────────────────────────────────────────────────────────
 
 type DemoMeta struct {
-	TickRate        float64 `json:"tick_rate"`
-	MapName         string  `json:"map_name"`
-	ServerName      string  `json:"server_name"`
-	DemoVersionName string  `json:"demo_version_name"`
+	TickRate        float64          `json:"tick_rate"`
+	MapName         string           `json:"map_name"`
+	ServerName      string           `json:"server_name"`
+	DemoVersionName string           `json:"demo_version_name"`
+	Capabilities    map[string]bool  `json:"capabilities"`
 }
 
 type RoundRecord struct {
@@ -69,6 +70,8 @@ type RoundRecord struct {
 	BombSite            string `json:"bomb_site"`
 	CTAliveEnd          int    `json:"ct_alive_end"`
 	TAliveEnd           int    `json:"t_alive_end"`
+	CTScore             int    `json:"ct_score"`
+	TScore              int    `json:"t_score"`
 }
 
 type KillRecord struct {
@@ -87,10 +90,68 @@ type KillRecord struct {
 	AttackerBlind   bool    `json:"attacker_blind"`
 	AssistedFlash   bool    `json:"assisted_flash"`
 	Distance        float64 `json:"distance"`
+	// ── v2 击杀瞬间双向快照 ──
+	KillerX             *float64 `json:"killer_x,omitempty"`
+	KillerY             *float64 `json:"killer_y,omitempty"`
+	KillerZ             *float64 `json:"killer_z,omitempty"`
+	VictimX             *float64 `json:"victim_x,omitempty"`
+	VictimY             *float64 `json:"victim_y,omitempty"`
+	VictimZ             *float64 `json:"victim_z,omitempty"`
+	KillerYaw           *float64 `json:"killer_yaw,omitempty"`
+	VictimYaw           *float64 `json:"victim_yaw,omitempty"`
+	KillerAirborne      bool    `json:"killer_airborne"`
+	VictimAirborne      bool    `json:"victim_airborne"`
+	KillerScoped        bool    `json:"killer_scoped"`
+	VictimScoped        bool    `json:"victim_scoped"`
+	KillerSpottedVictim bool    `json:"killer_spotted_victim"`
+	VictimSpottedKiller bool    `json:"victim_spotted_killer"`
+}
+
+// EventSnapshot 击杀前采样快照（跨 tick 规则：背身/切枪/跳杀）。
+type EventSnapshot struct {
+	Tick         int     `json:"tick"`
+	EventKind    string  `json:"event_kind"`
+	EventTick    int     `json:"event_tick"`
+	EventRound   int     `json:"event_round"`
+	SteamID      string  `json:"steamid"`
+	Name         string  `json:"name"`
+	Side         string  `json:"side"`
+	X            float64 `json:"x"`
+	Y            float64 `json:"y"`
+	Z            float64 `json:"z"`
+	Yaw          float64 `json:"yaw"`
+	HP           int     `json:"hp"`
+	ActiveWeapon string  `json:"active_weapon"`
+	IsWalking    bool    `json:"is_walking"`
+	IsAirborne   bool    `json:"is_airborne"`
+	IsDucking    bool    `json:"is_ducking"`
+	IsScoped     bool    `json:"is_scoped"`
+}
+
+// FiredRecord 武器开火事件（颗秒/水枪/单发判定）。
+type FiredRecord struct {
+	Tick         int     `json:"tick"`
+	RoundNo      int     `json:"round_no"`
+	Shooter      string  `json:"shooter"`
+	ShooterSteam string  `json:"shooter_steam"`
+	Weapon       string  `json:"weapon"`
+	X            *float64 `json:"x,omitempty"`
+	Y            *float64 `json:"y,omitempty"`
+	Z            *float64 `json:"z,omitempty"`
+}
+
+// EquipRecord 换武器事件（切刀就死/换枪节奏）。
+type EquipRecord struct {
+	Tick    int    `json:"tick"`
+	RoundNo int    `json:"round_no"`
+	Player  string `json:"player"`
+	SteamID string `json:"steamid"`
+	Weapon  string `json:"weapon"`
 }
 
 type GrenadeRecord struct {
 	EntityID  string   `json:"entity_id"`
+	StableEventID string `json:"stable_event_id"`
 	RoundNo   int      `json:"round_no"`
 	Thrower   string   `json:"thrower"`
 	Type      string   `json:"type"`
@@ -177,6 +238,16 @@ type TickRecord struct {
 	Money        int     `json:"money"`
 	Callout      string  `json:"callout"`
 	IsBlind      bool    `json:"is_blind"`
+	// ── v2 常态状态采样 ──
+	Yaw                 float64 `json:"yaw"`
+	Pitch               float64 `json:"pitch"`
+	IsWalking           bool    `json:"is_walking"`
+	IsAirborne          bool    `json:"is_airborne"`
+	IsDucking           bool    `json:"is_ducking"`
+	IsScoped            bool    `json:"is_scoped"`
+	ZoomLevel           int     `json:"zoom_level"`
+	InBombZone          bool    `json:"in_bomb_zone"`
+	MoneySpentThisRound int     `json:"money_spent_this_round"`
 }
 
 type RosterEntry struct {
@@ -355,6 +426,25 @@ func main() {
 	smokeList := []SmokeRecord{}
 	infernos := []InfernoRecord{}
 	flashes := []FlashRecord{}
+	fired := []FiredRecord{}
+	equips := []EquipRecord{}
+	eventSnapshots := []EventSnapshot{}
+
+	// 击杀前采样缓冲：保留最近若干采样 tick 的全员状态行
+	type playerSnap struct {
+		tick   int
+		steamID string
+		name   string
+		side   string
+		x, y, z float64
+		yaw    float64
+		hp     int
+		weapon string
+		walking, airborne, ducking, scoped bool
+	}
+	var snapRing []playerSnap
+	const snapRetainTicks = 512
+	const snapLookbackTicks = 128
 
 	// per-round accumulators
 	roundStart := map[int]int{}
@@ -370,9 +460,12 @@ func main() {
 	roundDefuserHasKit := map[int]*bool{}
 	roundCTAlive := map[int]int{}
 	roundTAlive := map[int]int{}
+	roundCTScore := map[int]int{}
+	roundTScore := map[int]int{}
 
 	// grenade entity tracking
 	grenadeMap := map[int]*GrenadeRecord{}
+	grenadeSameTickOrdinal := map[string]int{}
 
 	// smoke entity tracking
 	smokeMap := map[int]*SmokeRecord{}
@@ -428,11 +521,20 @@ func main() {
 		}
 		roundCTAlive[currentRound] = ct
 		roundTAlive[currentRound] = t
+		ctScore := p.GameState().Team(common.TeamCounterTerrorists).Score()
+		tScore := p.GameState().Team(common.TeamTerrorists).Score()
+		roundCTScore[currentRound] = ctScore
+		roundTScore[currentRound] = tScore
 	})
 
 	p.RegisterEventHandler(func(e events.Kill) {
 		tick := p.GameState().IngameTick()
 		dist := 0.0
+		var kx, ky, kz, vx, vy, vz *float64
+		var kYaw, vYaw *float64
+		kAir, vAir := false, false
+		kScoped, vScoped := false, false
+		kSpotsV, vSpotsK := false, false
 		if e.Killer != nil && e.Victim != nil {
 			kp := e.Killer.Position()
 			vp := e.Victim.Position()
@@ -440,24 +542,79 @@ func main() {
 			dy := kp.Y - vp.Y
 			dz := kp.Z - vp.Z
 			dist = math.Sqrt(dx*dx + dy*dy + dz*dz)
+			kx, ky, kz = ptrFloat(math.Round(kp.X*10)/10), ptrFloat(math.Round(kp.Y*10)/10), ptrFloat(math.Round(kp.Z*10)/10)
+			vx, vy, vz = ptrFloat(math.Round(vp.X*10)/10), ptrFloat(math.Round(vp.Y*10)/10), ptrFloat(math.Round(vp.Z*10)/10)
+			kYaw = ptrFloat(math.Round(float64(e.Killer.ViewDirectionX())*10) / 10)
+			vYaw = ptrFloat(math.Round(float64(e.Victim.ViewDirectionX())*10) / 10)
+			kAir, vAir = e.Killer.IsAirborne(), e.Victim.IsAirborne()
+			if e.Killer.ActiveWeapon() != nil {
+				kScoped = e.Killer.IsScoped()
+			}
+			if e.Victim.ActiveWeapon() != nil {
+				vScoped = e.Victim.IsScoped()
+			}
+			kSpotsV = e.Killer.HasSpotted(e.Victim)
+			vSpotsK = e.Victim.HasSpotted(e.Killer)
 		}
 		kills = append(kills, KillRecord{
-			Tick:            tick,
-			RoundNo:         currentRound,
-			Attacker:        playerName(e.Killer),
-			AttackerSteamID: playerSteam(e.Killer),
-			Victim:          playerName(e.Victim),
-			VictimSteamID:   playerSteam(e.Victim),
-			Assister:        playerName(e.Assister),
-			Weapon:          weaponName(e.Weapon),
-			Headshot:        e.IsHeadshot,
-			ThroughSmoke:    e.ThroughSmoke,
-			NoScope:         e.NoScope,
-			IsWallbang:      e.PenetratedObjects > 0,
-			AttackerBlind:   e.AttackerBlind,
-			AssistedFlash:   e.AssistedFlash,
-			Distance:        math.Round(dist*10) / 10,
+			Tick:                 tick,
+			RoundNo:              currentRound,
+			Attacker:             playerName(e.Killer),
+			AttackerSteamID:      playerSteam(e.Killer),
+			Victim:               playerName(e.Victim),
+			VictimSteamID:        playerSteam(e.Victim),
+			Assister:             playerName(e.Assister),
+			Weapon:               weaponName(e.Weapon),
+			Headshot:             e.IsHeadshot,
+			ThroughSmoke:         e.ThroughSmoke,
+			NoScope:              e.NoScope,
+			IsWallbang:           e.PenetratedObjects > 0,
+			AttackerBlind:        e.AttackerBlind,
+			AssistedFlash:        e.AssistedFlash,
+			Distance:             math.Round(dist*10) / 10,
+			KillerX:              kx, KillerY: ky, KillerZ: kz,
+			VictimX:              vx, VictimY: vy, VictimZ: vz,
+			KillerYaw:            kYaw, VictimYaw: vYaw,
+			KillerAirborne:       kAir, VictimAirborne: vAir,
+			KillerScoped:         kScoped, VictimScoped: vScoped,
+			KillerSpottedVictim:  kSpotsV, VictimSpottedKiller: vSpotsK,
 		})
+
+		// 击杀前采样快照：killer / victim 在击杀 tick 之前的最近状态行
+		names := map[string]string{}
+		if e.Killer != nil {
+			names[playerSteam(e.Killer)] = playerName(e.Killer)
+		}
+		if e.Victim != nil {
+			names[playerSteam(e.Victim)] = playerName(e.Victim)
+		}
+		lo := tick - snapLookbackTicks
+		for i := len(snapRing) - 1; i >= 0; i-- {
+			row := &snapRing[i]
+			if row.tick >= tick || row.tick < lo {
+				continue
+			}
+			if _, ok := names[row.steamID]; !ok {
+				continue
+			}
+			eventSnapshots = append(eventSnapshots, EventSnapshot{
+				Tick:         row.tick,
+				EventKind:    "kill",
+				EventTick:    tick,
+				EventRound:   currentRound,
+				SteamID:      row.steamID,
+				Name:         row.name,
+				Side:         row.side,
+				X:            row.x, Y: row.y, Z: row.z,
+				Yaw:          row.yaw,
+				HP:           row.hp,
+				ActiveWeapon: row.weapon,
+				IsWalking:    row.walking,
+				IsAirborne:   row.airborne,
+				IsDucking:    row.ducking,
+				IsScoped:     row.scoped,
+			})
+		}
 	})
 
 	p.RegisterEventHandler(func(e events.PlayerHurt) {
@@ -517,15 +674,23 @@ func main() {
 		eid := proj.UniqueID()
 		pos := proj.Position()
 		throwerName := playerName(proj.Thrower)
+		// stable_event_id：UniqueID() 是库内随机值，跨次解析不可复用。
+		// 用 round|throw_tick|thrower_steamid|kind|同 tick 序号 组装稳定键。
+		throwerSID := playerSteam(proj.Thrower)
+		kind := proj.WeaponInstance.Type.String()
+		sameKey := fmt.Sprintf("%d|%d|%s|%s", currentRound, tick, throwerSID, kind)
+		grenadeSameTickOrdinal[sameKey]++
+		stableID := fmt.Sprintf("%s|%d", sameKey, grenadeSameTickOrdinal[sameKey])
 		grenadeMap[int(eid)] = &GrenadeRecord{
-			EntityID:  fmt.Sprintf("%d", eid),
-			RoundNo:   currentRound,
-			Thrower:   throwerName,
-			Type:      proj.WeaponInstance.Type.String(),
-			ThrowTick: ptrInt(tick),
-			ThrowPosX: ptrFloat(pos.X),
-			ThrowPosY: ptrFloat(pos.Y),
-			ThrowPosZ: ptrFloat(pos.Z),
+			EntityID:      fmt.Sprintf("%d", eid),
+			StableEventID: stableID,
+			RoundNo:       currentRound,
+			Thrower:       throwerName,
+			Type:          kind,
+			ThrowTick:     ptrInt(tick),
+			ThrowPosX:     ptrFloat(pos.X),
+			ThrowPosY:     ptrFloat(pos.Y),
+			ThrowPosZ:     ptrFloat(pos.Z),
 		}
 	})
 
@@ -629,6 +794,38 @@ func main() {
 		}
 	})
 
+	p.RegisterEventHandler(func(e events.WeaponFire) {
+		shooter := e.Shooter
+		if shooter == nil {
+			return
+		}
+		tick := p.GameState().IngameTick()
+		rec := FiredRecord{
+			Tick:         tick,
+			RoundNo:      currentRound,
+			Shooter:      playerName(shooter),
+			ShooterSteam: playerSteam(shooter),
+			Weapon:       weaponName(e.Weapon),
+		}
+		pos := shooter.Position()
+		rec.X, rec.Y, rec.Z = ptrFloat(math.Round(pos.X*10)/10), ptrFloat(math.Round(pos.Y*10)/10), ptrFloat(math.Round(pos.Z*10)/10)
+		fired = append(fired, rec)
+	})
+
+	p.RegisterEventHandler(func(e events.ItemEquip) {
+		if e.Player == nil {
+			return
+		}
+		tick := p.GameState().IngameTick()
+		equips = append(equips, EquipRecord{
+			Tick:    tick,
+			RoundNo: currentRound,
+			Player:  playerName(e.Player),
+			SteamID: playerSteam(e.Player),
+			Weapon:  weaponName(e.Weapon),
+		})
+	})
+
 	p.RegisterEventHandler(func(e events.PlayerFlashed) {
 		tick := p.GameState().IngameTick()
 		victim := e.Player
@@ -692,23 +889,35 @@ func main() {
 				ammo = aw.AmmoInMagazine()
 			}
 			rec := TickRecord{
-				Tick:         tick,
-				RoundNo:      currentRound,
-				SteamID:      playerSteam(pl),
-				Name:         pl.Name,
-				Side:         sideStr(pl.Team),
-				X:            math.Round(pos.X*10) / 10,
-				Y:            math.Round(pos.Y*10) / 10,
-				Z:            math.Round(pos.Z*10) / 10,
-				HP:           pl.Health(),
-				Armor:        pl.Armor(),
-				HasHelmet:    pl.HasHelmet(),
-				HasKit:       pl.HasDefuseKit(),
-				ActiveWeapon: wpn,
-				Ammo:         ammo,
-				Money:        pl.Money(),
-				Callout:      pl.LastPlaceName(),
-				IsBlind:      pl.IsBlinded(),
+				Tick:                tick,
+				RoundNo:             currentRound,
+				SteamID:             playerSteam(pl),
+				Name:                pl.Name,
+				Side:                sideStr(pl.Team),
+				X:                   math.Round(pos.X*10) / 10,
+				Y:                   math.Round(pos.Y*10) / 10,
+				Z:                   math.Round(pos.Z*10) / 10,
+				HP:                  pl.Health(),
+				Armor:               pl.Armor(),
+				HasHelmet:           pl.HasHelmet(),
+				HasKit:              pl.HasDefuseKit(),
+				ActiveWeapon:        wpn,
+				Ammo:                ammo,
+				Money:               pl.Money(),
+				Callout:             pl.LastPlaceName(),
+				IsBlind:             pl.IsBlinded(),
+				Yaw:                 math.Round(float64(pl.ViewDirectionX())*10) / 10,
+				Pitch:               math.Round(float64(pl.ViewDirectionY())*10) / 10,
+				IsWalking:           pl.IsWalking(),
+				IsAirborne:          pl.IsAirborne(),
+				IsDucking:           pl.IsDucking(),
+				IsScoped:            pl.IsScoped(),
+				ZoomLevel:           0,
+				InBombZone:          pl.IsInBombZone(),
+				MoneySpentThisRound: pl.MoneySpentThisRound(),
+			}
+			if aw := pl.ActiveWeapon(); aw != nil {
+				rec.ZoomLevel = int(aw.ZoomLevel())
 			}
 			if err := tickEncoder.Encode(rec); err != nil {
 				tickWriteErr = err
@@ -717,6 +926,24 @@ func main() {
 			tickCount++
 			if rec.Callout != "" {
 				calloutCounts[rec.Callout]++
+			}
+			// 击杀前采样缓冲
+			snapRing = append(snapRing, playerSnap{
+				tick:     tick,
+				steamID:  rec.SteamID,
+				name:     rec.Name,
+				side:     rec.Side,
+				x:        rec.X, y: rec.Y, z: rec.Z,
+				yaw:      rec.Yaw,
+				hp:       rec.HP,
+				weapon:   rec.ActiveWeapon,
+				walking:  rec.IsWalking,
+				airborne: rec.IsAirborne,
+				ducking:  rec.IsDucking,
+				scoped:   rec.IsScoped,
+			})
+			if len(snapRing) > snapRetainTicks {
+				snapRing = snapRing[len(snapRing)-snapRetainTicks:]
 			}
 			// update roster
 			sid := playerSteam(pl)
@@ -791,6 +1018,8 @@ func main() {
 			BombSite:            roundBombSite[rno],
 			CTAliveEnd:          roundCTAlive[rno],
 			TAliveEnd:           roundTAlive[rno],
+			CTScore:             roundCTScore[rno],
+			TScore:              roundTScore[rno],
 		}
 		rounds = append(rounds, rec)
 	}
@@ -814,6 +1043,19 @@ func main() {
 		MapName:         mapName,
 		ServerName:      serverName,
 		DemoVersionName: "CS2",
+		Capabilities: map[string]bool{
+			"kill_snapshot":        true,
+			"movement_state":       true,
+			"orientation":          true,
+			"bomb_zone":            true,
+			"money_spent":          true,
+			"spotted_observation":  true,
+			"weapon_fire":          true,
+			"item_equip":           len(equips) > 0,
+			"event_snapshots":      true,
+			"grenade_stable_event": true,
+			"round_scores":         true,
+		},
 	}
 	if err := writeJSON(filepath.Join(*outDir, "demo_meta.json"), meta); err != nil {
 		log.Fatalf("write demo_meta: %v", err)
@@ -863,6 +1105,21 @@ func main() {
 		log.Fatalf("write flashes: %v", err)
 	}
 	fmt.Printf("  flashes: %d\n", len(flashes))
+
+	if err := writeJSON(filepath.Join(*outDir, "fired.json"), fired); err != nil {
+		log.Fatalf("write fired: %v", err)
+	}
+	fmt.Printf("  fired: %d\n", len(fired))
+
+	if err := writeJSON(filepath.Join(*outDir, "equips.json"), equips); err != nil {
+		log.Fatalf("write equips: %v", err)
+	}
+	fmt.Printf("  equips: %d\n", len(equips))
+
+	if err := writeJSON(filepath.Join(*outDir, "event_snapshots.json"), eventSnapshots); err != nil {
+		log.Fatalf("write event_snapshots: %v", err)
+	}
+	fmt.Printf("  event_snapshots: %d\n", len(eventSnapshots))
 
 	// A compact exact index for manual map initialization. Full coordinates
 	// remain in ticks.jsonl for later calibration.

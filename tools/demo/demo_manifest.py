@@ -22,6 +22,11 @@ REQUIRED_JSON_FILES = (
     "flashes.json",
 )
 TICK_FILES = ("ticks.parquet", "ticks.jsonl")
+OPTIONAL_CAPABILITY_FILES = {
+    "weapon_fire": "fired.json",
+    "item_equip": "equips.json",
+    "event_snapshots": "event_snapshots.json",
+}
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -61,7 +66,18 @@ def write_demo_manifest(
     parsed_dir = Path(parsed_dir)
     source_demo = Path(source_demo)
     row_counts = dict(row_counts or {})
+    meta = json.loads((parsed_dir / "demo_meta.json").read_text(encoding="utf-8"))
+    capabilities = meta.get("capabilities") if isinstance(meta, dict) else {}
+    capabilities = capabilities if isinstance(capabilities, dict) else {}
     names = list(REQUIRED_JSON_FILES)
+    for capability, name in OPTIONAL_CAPABILITY_FILES.items():
+        path = parsed_dir / name
+        if capabilities.get(capability) is True and not path.is_file():
+            raise DemoManifestError(
+                f"demo_meta.json declares capability {capability!r}, but {name} is missing"
+            )
+        if path.is_file():
+            names.append(name)
     names.extend(name for name in TICK_FILES if (parsed_dir / name).is_file())
     if not any(name in names for name in TICK_FILES):
         raise DemoManifestError("parsed demo has no tick artifact")
@@ -78,7 +94,6 @@ def write_demo_manifest(
             raise DemoManifestError(f"invalid row count for {name}: {rows!r}")
         files[name] = {"rows": rows, "sha256": sha256_file(path)}
 
-    meta = json.loads((parsed_dir / "demo_meta.json").read_text(encoding="utf-8"))
     try:
         tick_rate = float(meta["tick_rate"])
     except (KeyError, TypeError, ValueError) as exc:
@@ -129,6 +144,18 @@ def validate_demo_manifest(parsed_dir: Path) -> dict[str, Any]:
     if not any(name in files for name in TICK_FILES):
         raise DemoManifestError("demo manifest is missing a tick artifact")
 
+    try:
+        meta = json.loads((parsed_dir / "demo_meta.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise DemoManifestError("cannot read demo_meta.json") from exc
+    capabilities = meta.get("capabilities") if isinstance(meta, dict) else {}
+    capabilities = capabilities if isinstance(capabilities, dict) else {}
+    for capability, name in OPTIONAL_CAPABILITY_FILES.items():
+        if capabilities.get(capability) is True and name not in files:
+            raise DemoManifestError(
+                f"demo capability {capability!r} requires manifest artifact: {name}"
+            )
+
     for name, info in files.items():
         if not isinstance(name, str) or Path(name).name != name:
             raise DemoManifestError(f"invalid artifact name in demo manifest: {name!r}")
@@ -150,7 +177,6 @@ def validate_demo_manifest(parsed_dir: Path) -> dict[str, Any]:
 
     try:
         manifest_tick_rate = float(manifest["tick_rate"])
-        meta = json.loads((parsed_dir / "demo_meta.json").read_text(encoding="utf-8"))
         meta_tick_rate = float(meta["tick_rate"])
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise DemoManifestError("demo manifest or metadata has no valid tick_rate") from exc

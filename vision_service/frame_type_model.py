@@ -216,3 +216,41 @@ def predict_frame(model, labels: list[str], frame_bgr: np.ndarray, img_size: int
         "confidence": round(float(probs[index]), 6),
         "probs": {label: round(float(probs[i]), 6) for i, label in enumerate(labels)},
     }
+
+
+def predict_frames_batch(
+    model,
+    labels: list[str],
+    frames_bgr: list[np.ndarray],
+    img_size: int,
+    device: Any,
+    batch_size: int = 32,
+) -> list[dict]:
+    """对多帧做分批推理，返回与 predict_frame 结构一致的结果列表。
+
+    GPU 场景下单进程批推理吞吐远高于逐帧调用；CPU 场景批量亦可减少 Python
+    层开销。输出顺序与输入 frames_bgr 一一对应。
+    """
+    import torch
+
+    chunk_size = max(1, int(batch_size))
+    outputs: list[dict] = []
+    for start in range(0, len(frames_bgr), chunk_size):
+        chunk = frames_bgr[start : start + chunk_size]
+        tensors = torch.cat(
+            [frame_to_tensor(frame, img_size) for frame in chunk],
+            dim=0,
+        ).to(device)
+        with torch.no_grad():
+            logits = model(tensors)
+            probs = torch.softmax(logits, dim=1).detach().cpu().numpy()
+        for row in probs:
+            index = int(np.argmax(row))
+            outputs.append(
+                {
+                    "label": labels[index],
+                    "confidence": round(float(row[index]), 6),
+                    "probs": {label: round(float(row[i]), 6) for i, label in enumerate(labels)},
+                }
+            )
+    return outputs

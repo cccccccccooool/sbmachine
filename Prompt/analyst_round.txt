@@ -1,9 +1,11 @@
-请只把下面一个规则规划结果写成一条自然的 neutral。
+只依据下方规则层投影，写一句中性解说稿。
 
-场景：{scene}，归属窗 t∈[{t_start}, {t_end}]
+中性稿不得超过 {character_limit} 个中文字符。
 
-【唯一主话题】
-{event_summary}
-{state_block}
-【规则规划与窗口数据（JSON）】
+逐字保留全部 required_facts[].canonical_text（必保事实原文）。T 为进攻方，CT 为防守方，不得互换。
+
+rule_state 是双方当前存活人数快照；changed_teams 仅标注发生变化的队伍。不包含队伍总血量。
+
+player_state 是规则层生成的个人当前状态：首次为基线，之后只列更新；它是可选补充，不能压过 main_topic 和 required facts。不得把当前血量说成损失量，不得从"未列出某人"推断其死亡。
+
 {json_payload}

@@ -14,7 +14,9 @@ model:
   sovits_weights: ""
 
 reference:
-  audio_path: data/voice/reference/6657_ref.wav
+  # 可行性调查：直接引用素材库的两条参考音频（相对项目根）
+  audio_path: data/audio/raw/hight/平淡.wav
+  # 注意：prompt_text 必须与参考音频实际内容逐字一致，当前为占位文本，正式使用前需替换
   prompt_text: "兄弟们你看这个位置，这波要出事了。"
   prompt_lang: zh
 
@@ -23,14 +25,17 @@ reference:
 # prompt_text 必须与该 ref 音频内容逐字一致。缺失的情绪会自动回退到上面的默认 reference。
 emotion_refs:
   平述:
-    audio_path: data/voice/refs/calm.wav
+    audio_path: data/audio/raw/hight/平淡.wav
     prompt_text: "现在双方都还剩三个人，经济也都起来了。"
   激动:
-    audio_path: data/voice/refs/excited.wav
-    prompt_text: "秒了！又秒一个！这枪太硬了！"
+    # 由 random_review P1 随机切片(638s起,5.0s)生成；原 激动.wav 仅2.3s不满足3~10s要求。
+    # prompt_text 为占位，正式使用前需替换为该片段逐字转写。
+    audio_path: data/voice/refs/excited_clip.wav
+    prompt_text: "现在双方都还剩三个人，经济也都起来了。"
   惊叹:
-    audio_path: data/voice/refs/amazed.wav
-    prompt_text: "不是兄弟们，这怎么打的啊，太离谱了！"
+    # 同上：暂用 平淡.wav 顶替。
+    audio_path: data/audio/raw/hight/平淡.wav
+    prompt_text: "现在双方都还剩三个人，经济也都起来了。"
 
 dataset:
   speaker: "6657"

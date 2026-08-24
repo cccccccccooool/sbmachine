@@ -1,45 +1,85 @@
 {
-  "_comment": "选手绰号/昵称 RAG 库。key=demo 中的标准名，aliases=主播可能叫的绰号。Phase3 prompt 注入用。",
+  "_comment": "选手绰号/昵称 RAG 库。key=demo 中的标准名，aliases=主播可能叫的绰号。Phase3 prompt 注入用。desc 只写称呼用法，禁写事实描述。",
   "_usage": "tools/data_clean/label_commentary_pairs.py 审核时可追加。phase3b 在 prompt 里列出绰号供模型参考。",
 
   "s1mple": {
     "aliases": ["简单", "s1", "Simple"],
-    "desc": "NaVi 传奇选手，世界顶级AWP手"
+    "desc": "常称'简单'"
   },
   "donk": {
     "aliases": ["驴", "小驴"],
-    "desc": "Spirit战队新星，超强步枪手"
+    "desc": "常称'驴'或'小驴'"
   },
   "NiKo": {
     "aliases": ["尼克", "Niko"],
-    "desc": "G2传奇选手，顶级步枪手"
+    "desc": "常称'尼克'"
   },
   "ZywOo": {
     "aliases": ["小兔", "ZW"],
-    "desc": "Vitality王牌，历史级AWP手"
+    "desc": "常称'小兔'"
   },
   "sh1ro": {
     "aliases": ["白虎", "shiro"],
-    "desc": "Cloud9/Spirit AWP手"
+    "desc": "常称'白虎'"
   },
   "electronic": {
     "aliases": ["电子", "e哥"],
-    "desc": "NaVi/老队员"
+    "desc": "常称'电子'或'e哥'"
   },
   "b1t": {
     "aliases": ["bit", "小b"],
-    "desc": "NaVi步枪手"
+    "desc": "常称'小b'"
   },
   "chopper": {
     "aliases": ["斩波"],
-    "desc": "Spirit IGL"
+    "desc": "常称'斩波'"
   },
   "magixx": {
     "aliases": ["魔术师"],
-    "desc": "NaVi 入组新人"
+    "desc": "常称'魔术师'"
   },
   "w0nderful": {
     "aliases": ["w哥", "神奇"],
-    "desc": "NaVi AWP手"
+    "desc": "常称'w哥'"
+  },
+  "gr1ks": {
+    "aliases": ["griks", "格里克斯"],
+    "desc": "常按 ID 直呼"
+  },
+  "tabseN": {
+    "aliases": ["塔总", "tabsen"],
+    "desc": "常称'塔总'"
+  },
+  "faveN": {
+    "aliases": ["faven", "法文"],
+    "desc": "常按 ID 直呼"
+  },
+  "blameF": {
+    "aliases": ["blamef", "布莱姆"],
+    "desc": "常按 ID 直呼"
+  },
+  "Snax": {
+    "aliases": ["snax", "蛇哥"],
+    "desc": "常称'蛇哥'"
+  },
+  "hypex": {
+    "aliases": ["hypex", "海皮"],
+    "desc": "常按 ID 直呼"
+  },
+  "JDC": {
+    "aliases": ["jdc", "杰迪西"],
+    "desc": "常按 ID 直呼"
+  },
+  "REZ": {
+    "aliases": ["rez", "雷兹"],
+    "desc": "常按 ID 直呼"
+  },
+  "PR": {
+    "aliases": ["pr"],
+    "desc": "常按 ID 直呼"
+  },
+  "Tauson": {
+    "aliases": ["tauson", "陶森"],
+    "desc": "常按 ID 直呼"
   }
 }

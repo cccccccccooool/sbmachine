@@ -90,9 +90,12 @@ class RoundRecord:
     phase2_yolo: YoloData | None = None
     phase3_semantic: SemanticData | None = None
     phase4_audio: AudioData | None = None
+    scenes: list[dict] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict) -> "RoundRecord":
+        raw_scenes = data.get("scenes")
+        scenes = [dict(item) for item in raw_scenes] if isinstance(raw_scenes, list) else []
         return cls(
             round_no=int(data.get("round_no", 0)),
             start_sec=float(data.get("start_sec", 0)),
@@ -109,6 +112,7 @@ class RoundRecord:
             phase2_yolo=_yolo_from_dict(data.get("_phase2_yolo") or data.get("phase2_yolo")),
             phase3_semantic=_semantic_from_dict(data.get("_phase3_semantic") or data.get("phase3_semantic")),
             phase4_audio=_audio_from_dict(data.get("_phase4_audio") or data.get("phase4_audio")),
+            scenes=scenes,
         )
 
     def to_dict(self) -> dict:
@@ -137,6 +141,8 @@ class RoundRecord:
             data["_phase3_semantic"] = asdict(self.phase3_semantic)
         if self.phase4_audio is not None:
             data["_phase4_audio"] = asdict(self.phase4_audio)
+        if self.scenes:
+            data["scenes"] = self.scenes
         return data
 
 

@@ -54,7 +54,8 @@ try:
 except ImportError:
     pass
 
-from vision_service.frame_type_model import load_checkpoint, predict_frame, resolve_device
+from vision_service.frame_type_model import load_checkpoint, predict_frame, predict_frames_batch, resolve_device
+from sbmachine.progress_events import ProgressEventWriter
 from tools.demo.demo_manifest import validate_demo_manifest
 
 
@@ -74,20 +75,46 @@ def to_relative_path(path: Path | str | None) -> str:
 
 
 def iter_video_frames(video_path: Path, interval_sec: float, start_sec: float, end_sec: float | None):
+    """按 interval_sec 采样视频帧（顺序读，非逐帧 seek）。
+
+    旧实现每次采样都 ``cap.set(CAP_PROP_POS_MSEC)``，h264 每帧 seek 都要解码
+    附近 GOP，多进程并发 seek 同一文件会把 CPU/磁盘打满。这里只 seek 一次到
+    起点，之后顺序 grab 推进，每 interval_sec 取一帧；时间戳使用理论网格
+    （start_sec + n*interval），与旧输出语义一致。
+    """
     import cv2
 
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open video: {video_path}")
     try:
-        ts = float(start_sec)
-        while end_sec is None or ts <= end_sec + 1e-9:
-            cap.set(cv2.CAP_PROP_POS_MSEC, ts * 1000.0)
-            ok, frame = cap.read()
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0) or 30.0
+        step = max(1, int(round(float(interval_sec) * fps)))
+        start = float(start_sec)
+        end = None if end_sec is None else float(end_sec)
+        cap.set(cv2.CAP_PROP_POS_MSEC, start * 1000.0)
+        # 第一帧：seek 位置处立即取（语义与旧实现一致）
+        if end is None or start <= end + 1e-9:
+            ok = cap.grab()
+            if ok:
+                ok, frame = cap.retrieve()
+            if ok:
+                yield round(start, 3), frame
+        # 后续帧：顺序 grab step 帧后取 1 帧，避免逐帧 seek
+        ts = start + max(0.1, float(interval_sec))
+        while end is None or ts <= end + 1e-9:
+            ok = True
+            for _ in range(step):
+                ok = cap.grab()
+                if not ok:
+                    break
+            if not ok:
+                break
+            ok, frame = cap.retrieve()
             if not ok:
                 break
             yield round(ts, 3), frame
-            ts += max(0.1, interval_sec)
+            ts += max(0.1, float(interval_sec))
     finally:
         cap.release()
 
@@ -304,11 +331,58 @@ def build_segments_from_markers(markers_path: Path) -> list[dict]:
     return [segment for segment in segments if float(segment.get("duration_sec", 0)) > 0]
 
 
+def _predict_frame_rows(
+    model,
+    labels: list[str],
+    batch: list[tuple[float, object]],
+    img_size: int,
+    device,
+    batch_size: int,
+    *,
+    game_label: str,
+    replay_model,
+    replay_labels: list[str],
+    replay_img_size: int,
+    replay_roi,
+    replay_label: str,
+    replay_threshold: float,
+) -> list[dict]:
+    """对一批 (ts, frame) 做主模型批推理 + 逐帧 replay 判定，输出行结构不变。"""
+    frames = [frame for _, frame in batch]
+    if len(frames) == 1:
+        preds = [predict_frame(model, labels, frames[0], img_size, device)]
+    else:
+        preds = predict_frames_batch(model, labels, frames, img_size, device, batch_size)
+    rows: list[dict] = []
+    for (ts, frame), pred in zip(batch, preds):
+        row = {"time_sec": ts, **pred}
+        if row["label"] == game_label and replay_model is not None:
+            replay_frame = crop_normalized(frame, replay_roi)
+            replay_pred = predict_frame(replay_model, replay_labels, replay_frame, replay_img_size, device)
+            row["replay_marker"] = replay_pred
+            if replay_pred["label"] == replay_label and replay_pred["confidence"] >= replay_threshold:
+                row["is_replay"] = True
+                row["frame_type_source"] = "replay_marker_model"
+            else:
+                row["is_replay"] = False
+                row["frame_type_source"] = "game_break_model"
+        else:
+            row["is_replay"] = False
+            row["frame_type_source"] = "game_break_model"
+        rows.append(row)
+    return rows
+
+
 def process_video_chunk_with_queue(kwargs: dict, result_queue) -> None:
     worker_id = kwargs["worker_id"]
     video_path = kwargs["video_path"]
     model_path = kwargs["model_path"]
     device = kwargs["device"]
+    batch_size = max(1, int(kwargs.get("batch_size", 1)))
+    throttle = bool(kwargs.get("throttle", False))
+    throttle_cpu = float(kwargs.get("throttle_cpu", 0.8))
+    throttle_mem = float(kwargs.get("throttle_mem", 0.8))
+    throttle_sec = float(kwargs.get("throttle_sec", 1.0))
 
     try:
         model, labels, img_size, _ = load_checkpoint(model_path, device)
@@ -319,29 +393,45 @@ def process_video_chunk_with_queue(kwargs: dict, result_queue) -> None:
         if kwargs.get("replay_model_path"):
             replay_model, replay_labels, replay_img_size, _ = load_checkpoint(kwargs["replay_model_path"], device)
         rows = []
-        index = 0
+        processed = 0
+        batch: list[tuple[float, object]] = []
         for ts, frame in iter_video_frames(video_path, kwargs["interval_sec"], kwargs["start_sec"], kwargs["end_sec"]):
-            pred = predict_frame(model, labels, frame, img_size, device)
-            row = {"time_sec": ts, **pred}
-            if row["label"] == kwargs["game_label"] and replay_model is not None:
-                replay_frame = crop_normalized(frame, kwargs["replay_roi"])
-                replay_pred = predict_frame(replay_model, replay_labels, replay_frame, replay_img_size, device)
-                row["replay_marker"] = replay_pred
-                if replay_pred["label"] == kwargs["replay_label"] and replay_pred["confidence"] >= kwargs["replay_threshold"]:
-                    row["is_replay"] = True
-                    row["frame_type_source"] = "replay_marker_model"
-                else:
-                    row["is_replay"] = False
-                    row["frame_type_source"] = "game_break_model"
-            else:
-                row["is_replay"] = False
-                row["frame_type_source"] = "game_break_model"
-            rows.append(row)
-            index += 1
-            if index % 10 == 0:
-                result_queue.put((worker_id, index, None))
+            batch.append((ts, frame))
+            if len(batch) >= batch_size:
+                rows.extend(
+                    _predict_frame_rows(
+                        model, labels, batch, img_size, device, batch_size,
+                        game_label=kwargs["game_label"],
+                        replay_model=replay_model,
+                        replay_labels=replay_labels,
+                        replay_img_size=replay_img_size,
+                        replay_roi=kwargs["replay_roi"],
+                        replay_label=kwargs["replay_label"],
+                        replay_threshold=kwargs["replay_threshold"],
+                    )
+                )
+                processed += len(batch)
+                batch = []
+                if throttle:
+                    from sbmachine.resource_guard import throttled
 
-        result_queue.put((worker_id, index, {"rows": rows, "labels": labels}))
+                    throttled(cpu_ceiling=throttle_cpu, mem_ceiling=throttle_mem, throttle_sec=throttle_sec)
+                if processed % 10 == 0:
+                    result_queue.put((worker_id, processed, None))
+        if batch:
+            rows.extend(
+                _predict_frame_rows(
+                    model, labels, batch, img_size, device, batch_size,
+                    game_label=kwargs["game_label"],
+                    replay_model=replay_model,
+                    replay_labels=replay_labels,
+                    replay_img_size=replay_img_size,
+                    replay_roi=kwargs["replay_roi"],
+                    replay_label=kwargs["replay_label"],
+                    replay_threshold=kwargs["replay_threshold"],
+                )
+            )
+        result_queue.put((worker_id, len(rows), {"rows": rows, "labels": labels}))
     except Exception as e:
         result_queue.put((worker_id, -1, str(e)))
 
@@ -408,6 +498,13 @@ def run(args: argparse.Namespace) -> tuple[Path, Path]:
     replay_roi = parse_roi(args.replay_roi)
     rows = []
     total = estimate_probe_count(video_path, args.interval_sec, args.start_sec, args.end_sec)
+    writer = (
+        ProgressEventWriter(Path(args.progress_events), run_id=args.progress_run_id)
+        if getattr(args, "progress_events", None) and getattr(args, "progress_run_id", None) else None
+    )
+    def emit_progress(completed: int, detail: str | None = None) -> None:
+        if writer is not None:
+            writer.emit(event="stage_progress", stage="video_marking", completed=completed, total=total, unit="frame", detail=detail)
     workers = max(1, int(getattr(args, "workers", 1)))
     if workers > 1 and total is None:
         print("video duration unknown; falling back to one worker and reading until EOF", flush=True)
@@ -421,6 +518,12 @@ def run(args: argparse.Namespace) -> tuple[Path, Path]:
     print(f"estimated_frames: {total if total is not None else 'unknown'}")
 
     labels: list[str] = []
+    batch_size = max(1, int(getattr(args, "batch_size", 1)))
+    throttle = bool(getattr(args, "throttle", False))
+    throttle_cpu = float(getattr(args, "throttle_cpu", 0.8))
+    throttle_mem = float(getattr(args, "throttle_mem", 0.8))
+    throttle_sec = float(getattr(args, "throttle_sec", 1.0))
+
     if workers <= 1:
         model, labels, img_size, _checkpoint = load_checkpoint(model_path, device)
         replay_model = None
@@ -431,32 +534,52 @@ def run(args: argparse.Namespace) -> tuple[Path, Path]:
                 resolve_path(args.replay_model), device
             )
         print(f"labels: {', '.join(labels)}")
-        for index, (ts, frame) in enumerate(iter_video_frames(video_path, args.interval_sec, args.start_sec, args.end_sec), start=1):
-            pred = predict_frame(model, labels, frame, img_size, device)
-            row = {"time_sec": ts, **pred}
-            if row["label"] == args.game_label and replay_model is not None:
-                replay_frame = crop_normalized(frame, replay_roi)
-                replay_pred = predict_frame(replay_model, replay_labels, replay_frame, replay_img_size, device)
-                row["replay_marker"] = replay_pred
-                if replay_pred["label"] == args.replay_label and replay_pred["confidence"] >= args.replay_threshold:
-                    row["is_replay"] = True
-                    row["frame_type_source"] = "replay_marker_model"
-                else:
-                    row["is_replay"] = False
-                    row["frame_type_source"] = "game_break_model"
-            else:
-                row["is_replay"] = False
-                row["frame_type_source"] = "game_break_model"
-            rows.append(row)
-            should_report = index == 1 or index % max(1, args.progress_every) == 0
-            if total is not None:
-                should_report = should_report or index >= total
-            if should_report:
-                if total:
-                    percent = min(100.0, index / total * 100.0)
-                    print(f"progress: {index}/{total} ({percent:.1f}%) @ {ts:.1f}s", flush=True)
-                else:
-                    print(f"progress: {index} frames @ {ts:.1f}s", flush=True)
+        pending: list[tuple[float, object]] = []
+        processed = 0
+        for ts, frame in iter_video_frames(video_path, args.interval_sec, args.start_sec, args.end_sec):
+            pending.append((ts, frame))
+            if len(pending) >= batch_size:
+                rows.extend(
+                    _predict_frame_rows(
+                        model, labels, pending, img_size, device, batch_size,
+                        game_label=args.game_label,
+                        replay_model=replay_model,
+                        replay_labels=replay_labels,
+                        replay_img_size=replay_img_size,
+                        replay_roi=replay_roi,
+                        replay_label=args.replay_label,
+                        replay_threshold=args.replay_threshold,
+                    )
+                )
+                processed += len(pending)
+                pending = []
+                if throttle:
+                    from sbmachine.resource_guard import throttled
+
+                    throttled(cpu_ceiling=throttle_cpu, mem_ceiling=throttle_mem, throttle_sec=throttle_sec)
+                should_report = processed == batch_size or processed % max(1, args.progress_every) == 0
+                if total is not None:
+                    should_report = should_report or processed >= total
+                if should_report:
+                    emit_progress(processed)
+                    if total:
+                        percent = min(100.0, processed / total * 100.0)
+                        print(f"progress: {processed}/{total} ({percent:.1f}%) @ {ts:.1f}s", flush=True)
+                    else:
+                        print(f"progress: {processed} frames @ {ts:.1f}s", flush=True)
+        if pending:
+            rows.extend(
+                _predict_frame_rows(
+                    model, labels, pending, img_size, device, batch_size,
+                    game_label=args.game_label,
+                    replay_model=replay_model,
+                    replay_labels=replay_labels,
+                    replay_img_size=replay_img_size,
+                    replay_roi=replay_roi,
+                    replay_label=args.replay_label,
+                    replay_threshold=args.replay_threshold,
+                )
+            )
     else:
         duration = get_video_duration_sec(video_path) or 0.0
         eff_start = args.start_sec
@@ -485,6 +608,11 @@ def run(args: argparse.Namespace) -> tuple[Path, Path]:
                 "replay_label": args.replay_label,
                 "replay_threshold": args.replay_threshold,
                 "replay_roi": replay_roi,
+                "batch_size": batch_size,
+                "throttle": throttle,
+                "throttle_cpu": throttle_cpu,
+                "throttle_mem": throttle_mem,
+                "throttle_sec": throttle_sec,
             }
             p = ctx.Process(target=process_video_chunk_with_queue, args=(task_args, result_queue))
             p.start()
@@ -515,6 +643,7 @@ def run(args: argparse.Namespace) -> tuple[Path, Path]:
                     worker_progress[worker_id] = progress
                 
                 current_total = sum(worker_progress.values())
+                emit_progress(current_total)
                 if total:
                     percent = min(100.0, current_total / total * 100.0)
                     print(f"progress: {current_total}/{total} ({percent:.1f}%)", flush=True)
@@ -605,7 +734,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bridge-gap-sec", type=float, default=3.0)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--workers", type=int, default=1, help="多进程并行数量，提升处理速度")
+    parser.add_argument("--batch-size", type=int, default=1, help="主模型批推理批量；GPU 场景建议 32，CPU 保持 1")
+    parser.add_argument("--throttle", action="store_true", help="启用系统资源节流（CPU/内存超限时放缓）")
+    parser.add_argument("--throttle-cpu", type=float, default=0.8, help="节流 CPU 上限（0-1，0.8=80%）")
+    parser.add_argument("--throttle-mem", type=float, default=0.8, help="节流内存上限（0-1，0.8=80%）")
+    parser.add_argument("--throttle-sec", type=float, default=1.0, help="超限后的休眠秒数")
     parser.add_argument("--progress-every", type=int, default=25, help="命令行进度输出间隔，按采样帧数计算")
+    parser.add_argument("--progress-events", default="")
+    parser.add_argument("--progress-run-id", default="")
     return parser.parse_args()
 
 

@@ -58,6 +58,15 @@ def _normalize_planning_frames(keyframes: list[dict]) -> list[dict]:
                 "x":       p.get("x"),
                 "y":       p.get("y"),
                 "z":       p.get("z"),
+                "yaw":     p.get("yaw"),
+                "pitch":   p.get("pitch"),
+                "is_walking": p.get("is_walking"),
+                "is_airborne": p.get("is_airborne"),
+                "is_ducking": p.get("is_ducking"),
+                "is_scoped": p.get("is_scoped"),
+                "zoom_level": p.get("zoom_level"),
+                "in_bomb_zone": p.get("in_bomb_zone"),
+                "money_spent_this_round": p.get("money_spent_this_round"),
             })
         frame.setdefault("where", {})["players"] = clean_players
 
@@ -88,8 +97,9 @@ def _normalize_planning_frames(keyframes: list[dict]) -> list[dict]:
 
         # ── flashes：全部保留（不设阈值），丢弃 steamid ──
         flash_warn = False
+        src_flashes = ev.get("flashes") or []
         ev["flashes"] = []
-        for f in ev.get("flashes", []):
+        for f in src_flashes:
             dur = f.get("duration_s", f.get("duration"))
             if dur is None:
                 flash_warn = True
@@ -116,10 +126,49 @@ def _normalize_planning_frames(keyframes: list[dict]) -> list[dict]:
         # ── infernos：丢弃火焰包络多边形，保留投掷者 + 面积 ──
         ev["infernos_active"] = [
             {
+                "entity_id":  i.get("entity_id"),
                 "thrower":    i.get("thrower"),
+                "start_tick": i.get("start_tick"),
+                "end_tick":   i.get("end_tick"),
+                "centroid_x": i.get("centroid_x"),
+                "centroid_y": i.get("centroid_y"),
                 "area_approx": i.get("area_approx"),
             }
             for i in ev.get("infernos_active", [])
+        ]
+
+        # ── 跨 tick 规则证据：裁掉 steamid，只保留判定所需的最小字段 ──
+        ev["weapon_fires"] = [
+            {
+                "tick": row.get("tick"),
+                "round_no": row.get("round_no"),
+                "shooter": row.get("shooter"),
+                "weapon": row.get("weapon"),
+                "x": row.get("x"),
+                "y": row.get("y"),
+                "z": row.get("z"),
+            }
+            for row in ev.get("weapon_fires", [])
+        ]
+        ev["item_equips"] = [
+            {
+                "tick": row.get("tick"),
+                "round_no": row.get("round_no"),
+                "player": row.get("player"),
+                "weapon": row.get("weapon"),
+            }
+            for row in ev.get("item_equips", [])
+        ]
+        ev["event_snapshots"] = [
+            {
+                key: row.get(key)
+                for key in (
+                    "tick", "event_kind", "event_tick", "event_round", "name",
+                    "side", "x", "y", "z", "yaw", "hp", "active_weapon",
+                    "is_walking", "is_airborne", "is_ducking", "is_scoped",
+                )
+            }
+            for row in ev.get("event_snapshots", [])
         ]
 
         out.append(frame)
@@ -185,48 +234,74 @@ def _player_state_snapshot(frames: list[dict]) -> dict[str, dict]:
     return snapshot
 
 
+def _is_dead_state(state: dict) -> bool:
+    hp = state.get("hp")
+    return isinstance(hp, (int, float)) and hp <= 0
+
+
+def _state_one_line(name: str, state: dict) -> str:
+    """单选手当前快照一行：name（side，hp血，weapon，callout）。"""
+    detail: list[str] = []
+    if state.get("side"):
+        detail.append(str(state["side"]))
+    hp = state.get("hp")
+    if hp is not None:
+        detail.append(f"{hp}血")
+    if state.get("weapon"):
+        detail.append(str(state["weapon"]))
+    if state.get("callout"):
+        detail.append(str(state["callout"]))
+    return f"{name}（{'，'.join(detail)}）" if detail else name
+
+
 def build_state_block(frames: list[dict], reported: dict[str, dict]) -> str:
-    """构建给 LLM-A 的增量状态报告：回合首窗全量汇报一次，之后仅报变化。
+    """构建给 LLM-A 的增量状态报告：回合首窗全量基线一次，之后仅报当前值变化。
 
     ``reported`` 是回合内跨窗口复用的可变字典（记录上次已汇报状态）。
     与云端 ``_append_state_delta`` 同一取舍：只追 hp/weapon/callout；
     ammo 与原始坐标留在确定性规划器内部，不进 prompt。
+    更新行只给当前值，不输出差值或"换枪/转移"事件判断。
     """
     snapshot = _player_state_snapshot(frames)
     if not snapshot:
         return ""
     if not reported:
-        parts = []
+        parts: list[str] = []
         for name, state in snapshot.items():
-            desc = "·".join(str(state[key]) for key in ("side", "weapon", "callout") if state.get(key))
-            hp = state.get("hp")
-            if hp is not None:
-                desc = f"{desc}·{hp}血" if desc else f"{hp}血"
-            parts.append(f"{name}({desc})" if desc else name)
             reported[name] = dict(state)
-        return "开局状态：" + "；".join(parts)
+            if _is_dead_state(state):
+                reported[name]["dead"] = True
+                parts.append(f"{name}已阵亡")
+                continue
+            parts.append(_state_one_line(name, state))
+        return "首次快照：" + "；".join(parts)
 
     changes: list[str] = []
     for name, state in snapshot.items():
         old = reported.get(name)
         if old is None:
-            # 数据缺口后首次见到该选手：静默纳入跟踪，不当作事件汇报。
+            # 中途首次可靠看到此前缺失的选手：建立并输出一次当前快照，
+            # 不把它描述成比赛事件；不推断此前为何缺失。
             reported[name] = dict(state)
+            if _is_dead_state(state):
+                reported[name]["dead"] = True
+                changes.append(f"{name}已阵亡")
+            else:
+                changes.append(_state_one_line(name, state))
             continue
         if old.get("dead"):
             continue
-        hp = state.get("hp")
-        if isinstance(hp, (int, float)) and hp <= 0:
-            changes.append(f"{name} 阵亡")
+        if _is_dead_state(state):
+            changes.append(f"{name}已阵亡")
             old["dead"] = True
             continue
-        detail = []
+        detail: list[str] = []
         if state.get("hp") is not None and state.get("hp") != old.get("hp"):
-            detail.append(f"血量{old.get('hp')}→{state.get('hp')}")
+            detail.append(f"{state.get('hp')}血")
         if state.get("weapon") and state.get("weapon") != old.get("weapon"):
-            detail.append(f"换枪{state.get('weapon')}")
+            detail.append(f"武器{state.get('weapon')}")
         if state.get("callout") and state.get("callout") != old.get("callout"):
-            detail.append(f"转移{state.get('callout')}")
+            detail.append(f"位置{state.get('callout')}")
         if detail:
             changes.append(f"{name} " + "、".join(detail))
         for key in _STATE_FIELDS:
@@ -234,7 +309,7 @@ def build_state_block(frames: list[dict], reported: dict[str, dict]) -> str:
                 old[key] = state.get(key)
     if not changes:
         return ""
-    return "状态变化：" + "；".join(changes)
+    return "更新：" + "；".join(changes)
 
 
 def _semantic_payload(round_record, external_frames: list[dict] | None = None) -> dict:

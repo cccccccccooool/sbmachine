@@ -1,0 +1,191 @@
+{
+  "name": "wanjiji",
+  "display_name": "wanjiji",
+  "character": "celebrity",
+  "research_profile": "budget-unfriendly",
+  "classification": {
+    "language": "zh-CN",
+    "gallery_category": "Celebrity",
+    "tags": [
+      "CS:GO",
+      "CS2",
+      "电竞解说",
+      "直播",
+      "成语大师",
+      "斗鱼"
+    ]
+  },
+  "profile": "CS:GO/CS2职业解说员，斗鱼6657主播。本名刘亦博，1996年生。2018完美盛典双料得主，2025福布斯卓越电竞解说。以中西结合解说风格著称——融合英文解说的情绪渲染与中文解说的战术分析。标志性特征：成语大师、复读式节奏、悖论体幽默、二次元文化底色。",
+  "tags": [
+    "CS:GO",
+    "CS2",
+    "电竞解说",
+    "直播",
+    "成语大师",
+    "斗鱼"
+  ],
+  "knowledge_sources": [
+    "本地905条解说语料(all_scored_sentences_levels.jsonl, 标注兴奋度+时间戳)",
+    "E:\\video\\ 10个解说视频(43GB, 仅游戏画面)",
+    "B站空间 https://space.bilibili.com/2183230",
+    "斗鱼鱼吧API https://www.douyu.com/wgapi/yubanc/api/feed/getUserFeedList?uid=61899676",
+    "微博 https://weibo.com/u/5974900255",
+    "B5明星主播专访(2016)",
+    "萌娘百科条目",
+    "NGA/虎扑/贴吧社区讨论",
+    "2025福布斯中国电竞30评选"
+  ],
+  "type": "celebrity",
+  "lifecycle": {
+    "status": "active",
+    "created_at": "2026-07-03T18:45:03.954260+00:00",
+    "updated_at": "2026-07-03T18:45:03.954260+00:00",
+    "version": "v1"
+  },
+  "generation": {
+    "engine": "dot-skill",
+    "character": "celebrity",
+    "research_profile": "budget-unfriendly",
+    "preset": "dot.celebrity.v1",
+    "prompt_bundle": {
+      "preset": "dot.celebrity.v1",
+      "intake": "prompts/celebrity/intake.md",
+      "research": "prompts/celebrity/research.md",
+      "work_analyzer": "prompts/work_analyzer.md",
+      "persona_analyzer": "prompts/celebrity/persona_analyzer.md",
+      "work_builder": "prompts/work_builder.md",
+      "persona_builder": "prompts/celebrity/persona_builder.md",
+      "merger": "prompts/celebrity/merger.md",
+      "correction_handler": "prompts/correction_handler.md"
+    },
+    "research_profile_bundle": {
+      "research": "prompts/celebrity/budget_unfriendly/research.md",
+      "audit": "prompts/celebrity/budget_unfriendly/audit.md",
+      "synthesis": "prompts/celebrity/budget_unfriendly/synthesis.md",
+      "validation": "prompts/celebrity/budget_unfriendly/validation.md",
+      "persona_analyzer": "prompts/celebrity/budget_unfriendly/persona_analyzer.md",
+      "persona_builder": "prompts/celebrity/budget_unfriendly/persona_builder.md"
+    },
+    "research_profile_references": [
+      "references/celebrity_budget_unfriendly_framework.md",
+      "references/celebrity_budget_unfriendly_template.md"
+    ],
+    "merge_strategy": "deep",
+    "quality_profile": "budget-unfriendly",
+    "knowledge_dirs": [
+      "docs",
+      "messages",
+      "emails",
+      "research/raw",
+      "research/merged",
+      "research/reviews",
+      "transcripts",
+      "subtitles"
+    ],
+    "storage_root": "skills/celebrity",
+    "research_tools": {
+      "subtitle_downloader": "tools/research/download_subtitles.sh",
+      "subtitle_cleaner": "tools/research/srt_to_transcript.py",
+      "research_merger": "tools/research/merge_research.py",
+      "quality_check": "tools/research/quality_check.py"
+    },
+    "created_from": [
+      "本地905条解说语料(all_scored_sentences_levels.jsonl, 标注兴奋度+时间戳)",
+      "E:\\video\\ 10个解说视频(43GB, 仅游戏画面)",
+      "B站空间 https://space.bilibili.com/2183230",
+      "斗鱼鱼吧API https://www.douyu.com/wgapi/yubanc/api/feed/getUserFeedList?uid=61899676",
+      "微博 https://weibo.com/u/5974900255",
+      "B5明星主播专访(2016)",
+      "萌娘百科条目",
+      "NGA/虎扑/贴吧社区讨论",
+      "2025福布斯中国电竞30评选"
+    ],
+    "corrections_count": 0
+  },
+  "source_context": {
+    "domain": "public",
+    "relationship_to_user": "public_figure",
+    "is_real_person": true,
+    "is_public_figure": true,
+    "is_fictional": false
+  },
+  "engine": {
+    "name": "dot-skill",
+    "kind": "meta-skill",
+    "character": "celebrity",
+    "research_profile": "budget-unfriendly",
+    "preset": "dot.celebrity.v1",
+    "prompt_bundle": {
+      "preset": "dot.celebrity.v1",
+      "intake": "prompts/celebrity/intake.md",
+      "research": "prompts/celebrity/research.md",
+      "work_analyzer": "prompts/work_analyzer.md",
+      "persona_analyzer": "prompts/celebrity/persona_analyzer.md",
+      "work_builder": "prompts/work_builder.md",
+      "persona_builder": "prompts/celebrity/persona_builder.md",
+      "merger": "prompts/celebrity/merger.md",
+      "correction_handler": "prompts/correction_handler.md"
+    },
+    "research_profile_bundle": {
+      "research": "prompts/celebrity/budget_unfriendly/research.md",
+      "audit": "prompts/celebrity/budget_unfriendly/audit.md",
+      "synthesis": "prompts/celebrity/budget_unfriendly/synthesis.md",
+      "validation": "prompts/celebrity/budget_unfriendly/validation.md",
+      "persona_analyzer": "prompts/celebrity/budget_unfriendly/persona_analyzer.md",
+      "persona_builder": "prompts/celebrity/budget_unfriendly/persona_builder.md"
+    },
+    "research_profile_references": [
+      "references/celebrity_budget_unfriendly_framework.md",
+      "references/celebrity_budget_unfriendly_template.md"
+    ],
+    "merge_strategy": "deep",
+    "quality_profile": "budget-unfriendly",
+    "knowledge_dirs": [
+      "docs",
+      "messages",
+      "emails",
+      "research/raw",
+      "research/merged",
+      "research/reviews",
+      "transcripts",
+      "subtitles"
+    ],
+    "storage_root": "skills/celebrity",
+    "research_tools": {
+      "subtitle_downloader": "tools/research/download_subtitles.sh",
+      "subtitle_cleaner": "tools/research/srt_to_transcript.py",
+      "research_merger": "tools/research/merge_research.py",
+      "quality_check": "tools/research/quality_check.py"
+    }
+  },
+  "schema_version": "3",
+  "slug": "wanjiji",
+  "kind": "meta-skill",
+  "subtype": null,
+  "preset": "dot.celebrity.v1",
+  "id": "meta-skill.celebrity.wanjiji",
+  "artifacts": {
+    "combined_skill": "SKILL.md",
+    "work_skill": "work_skill.md",
+    "persona_skill": "persona_skill.md",
+    "work_doc": "work.md",
+    "persona_doc": "persona.md",
+    "manifest": "manifest.json",
+    "combined_name": "celebrity_wanjiji",
+    "work_name": "celebrity_wanjiji_work",
+    "persona_name": "celebrity_wanjiji_persona",
+    "combined_command": "celebrity-wanjiji",
+    "work_command": "celebrity-wanjiji-work",
+    "persona_command": "celebrity-wanjiji-persona"
+  },
+  "compat": {
+    "legacy_command": "/create-icon",
+    "legacy_storage_root": "skills/celebrity",
+    "legacy_type": "celebrity"
+  },
+  "summary": "wanjiji, CS:GO/CS2职业解说员，斗鱼6657主播。本名刘亦博，1996年生。2018完美盛典双料得主，2025福布斯卓越电竞解说。以中西结合解说风格著称——融合英文解说的情绪渲染与中文解说的战术分析。标志性特征：成语大师、复读式节奏、悖论体幽默、二次元文化底色。",
+  "created_at": "2026-07-03T18:45:03.954260+00:00",
+  "updated_at": "2026-07-03T18:45:03.954260+00:00",
+  "version": "v1",
+  "corrections_count": 0
+}

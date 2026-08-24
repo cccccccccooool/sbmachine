@@ -114,7 +114,7 @@ def load_config(path_or_dir=None) -> dict:
     Returns
     -------
     dict
-        合并后的配置字典，键为各 yaml 顶层段名（如 vision/llm/tts 等）。
+        合并后的配置字典，键为各 yaml 顶层段名（如 pipeline/llm/yolo 等）。
     """
     config_path = _DEFAULT_CONFIG_DIR if path_or_dir is None else Path(path_or_dir)
 

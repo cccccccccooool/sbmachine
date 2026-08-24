@@ -17,7 +17,6 @@ import json
 import os
 import sys
 import wave
-from functools import lru_cache
 from pathlib import Path
 
 import requests
@@ -65,11 +64,11 @@ def set_weights(api_url: str, gpt_weights: str, sovits_weights: str) -> None:
 
 
 def _emotion_speed_factors() -> dict[str, float]:
-    """加载实际发给 GPT-SoVITS 的各情绪语速系数。"""
+    """加载实际发给 GPT-SoVITS 的各情绪语速系数（speech_rate.tts_speed_factor，只管 TTS 语速）。"""
     try:
         rules_path = PROJECT_ROOT / "Prompt" / "json" / "hype_rules.json"
         rules = json.loads(rules_path.read_text(encoding="utf-8"))
-        values = rules.get("speech_rate", {}).get("emotion_speed_factor", {})
+        values = rules.get("speech_rate", {}).get("tts_speed_factor", {})
         return {str(emotion): float(value) for emotion, value in values.items()}
     except Exception:
         return {}
@@ -127,8 +126,7 @@ def _reference_fingerprint(ref: dict, speed_factor: float) -> dict:
     }
 
 
-@lru_cache(maxsize=16)
-def _versioned_file_sha256(path_value: str, _size: int, _mtime_ns: int, _ctime_ns: int) -> str:
+def _file_sha256(path_value: str) -> str:
     digest = hashlib.sha256()
     with Path(path_value).open("rb") as file:
         for chunk in iter(lambda: file.read(1024 * 1024), b""):
@@ -140,21 +138,32 @@ def _weight_fingerprint(value: str | Path) -> dict:
     path = resolve_path(value) if value else None
     content_sha256 = None
     if path is not None and path.is_file():
-        stat = path.stat()
-        content_sha256 = _versioned_file_sha256(
-            str(path),
-            stat.st_size,
-            stat.st_mtime_ns,
-            stat.st_ctime_ns,
-        )
+        # File metadata can remain unchanged when a same-size model is replaced
+        # quickly. Hash the bytes so a stale TTS asset can never be reused.
+        content_sha256 = _file_sha256(str(path))
     return {
         "path": str(path) if path is not None else "",
         "sha256": content_sha256,
     }
 
 
-def tts_cache_fingerprint(config: dict, text: str) -> str:
-    """对所有可能改变情绪 TTS 输出的运行时值取指纹，用于缓存命中判定。"""
+def tts_cache_fingerprint(
+    config: dict,
+    text: str,
+    *,
+    speed_factor: float = 1.0,
+    variant_id: str | None = None,
+    profile_id: str | None = None,
+    budget_overage: float = 1.0,
+) -> str:
+    """对所有可能改变情绪 TTS 输出的运行时值取指纹，用于缓存命中判定。
+
+    缓存键除 model/引用音频/情绪语速外，还包含调用方显式指定的
+    speed_factor、variant_id、profile_id 与 budget_overage：任一变化都会
+    生成新的缓存文件。budget_overage 参与 v2 合成时的实际倍速
+    （overage_mult），因此必须进入缓存身份（审计 §5.2：相同文本在不同
+    char_budget 下不得复用另一速度合成的 WAV）。
+    """
     from audio_service.emotion import parse_emotional_text, resolve_emotion_ref
 
     model = dict(config.get("model", {}))
@@ -167,20 +176,75 @@ def tts_cache_fingerprint(config: dict, text: str) -> str:
     speed_map = _emotion_speed_factors()
     references = []
     for segment in parse_emotional_text(text):
-        speed = float(speed_map.get(segment.emotion, 1.0))
+        speed = float(speed_map.get(segment.emotion, 1.0)) * float(speed_factor) * float(budget_overage)
         ref = resolve_emotion_ref(segment.emotion, emotion_refs, default_ref)
         references.append({
             "emotion": segment.emotion,
             **_reference_fingerprint(ref, speed),
         })
     encoded = json.dumps(
-        {"model": model, "references": references},
+        {
+            "model": model,
+            "references": references,
+            "variant_id": variant_id,
+            "profile_id": profile_id,
+            "speed_factor": float(speed_factor),
+            "budget_overage": float(budget_overage),
+        },
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
         default=str,
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def tts_runtime_fingerprint(config: dict, sample_rate_hz: int | None = None) -> dict:
+    """从当前 TTS 运行时配置推导 engine/voice/preprocess 三个指纹。
+
+    用于与 speech profile（§11.5）核对：任务单引用的 profile 指纹必须与
+    Phase4 当前 TTS 运行指纹完全一致，否则禁止按任务单风险分级合成。
+    """
+    model = dict(config.get("model", {}))
+    model["gpt_weights"] = os.getenv("GPT_SOVITS_GPT_WEIGHTS") or model.get("gpt_weights", "")
+    model["sovits_weights"] = os.getenv("GPT_SOVITS_SOVITS_WEIGHTS") or model.get("sovits_weights", "")
+    engine_payload = {
+        "engine": "gpt-sovits",
+        "weights": {key: _weight_fingerprint(value) for key, value in model.items()},
+    }
+    refs_payload: dict[str, dict] = {}
+    default_ref = config.get("reference", {})
+    if isinstance(default_ref, dict) and default_ref:
+        refs_payload["default"] = _reference_fingerprint(default_ref, 1.0)
+    emotion_refs = config.get("emotion_refs", {})
+    if isinstance(emotion_refs, dict):
+        for emotion in sorted(emotion_refs):
+            if isinstance(emotion_refs[emotion], dict):
+                refs_payload[emotion] = _reference_fingerprint(emotion_refs[emotion], 1.0)
+    preprocess_payload = {
+        "policy": "phase4-pcm-policy-v1",
+        "text_split_method": "cut5",
+        "media_type": "wav",
+        "streaming_mode": False,
+        "emotion_tag_syntax": "[emotion]",
+        "sample_rate_hz": sample_rate_hz,
+    }
+
+    def _digest(payload: dict) -> str:
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    return {
+        "engine_fingerprint": _digest(engine_payload),
+        "voice_fingerprint": _digest(refs_payload),
+        "preprocess_fingerprint": _digest(preprocess_payload),
+    }
 
 
 def _synthesize_bytes(config: dict, text: str, ref: dict, speed_factor: float = 1.0) -> bytes:
@@ -207,8 +271,21 @@ def synthesize(config: dict, text: str, output_path: Path) -> None:
     print(f"audio written: {output_path}")
 
 
-def synthesize_emotional(config: dict, text: str, output_path: Path) -> Path:
-    """按情绪分段合成,全程在内存中拼接 PCM,最后一次写出 WAV。不生成中间段文件。"""
+def synthesize_emotional(
+    config: dict,
+    text: str,
+    output_path: Path,
+    *,
+    budget_overage: float = 1.0,
+    speed_factor: float = 1.0,
+) -> Path:
+    """按情绪分段合成,全程在内存中拼接 PCM,最后一次写出 WAV。不生成中间段文件。
+
+    budget_overage: Phase3b 产物的预算超支比例（output_chars / char_budget）。>1.0 时动态加速
+    TTS 语速以容下更长的文本，上限 1.5x。
+    speed_factor: 调用方显式指定的倍速（Phase4 v3 任务单选择算法使用），与情绪语速相乘；
+    v2 单稿路径不传，行为保持不变。
+    """
     from audio_service.emotion import parse_emotional_text, resolve_emotion_ref
 
     model_config = config.get("model", {})
@@ -220,8 +297,9 @@ def synthesize_emotional(config: dict, text: str, output_path: Path) -> Path:
     if not segments:
         raise ValueError("commentary text is empty or contains only emotion tags")
 
-    # 顶部一次性加载 emotion_speed_factor，避免每次调用 _emotion_speed_factor 重复读磁盘
+    # 顶部一次性加载 tts_speed_factor，避免每段重复读磁盘
     speed_map = _emotion_speed_factors()
+    overage_mult = max(1.0, min(1.5, budget_overage))
 
     # 按情绪批量请求,保持原始顺序
     ordered_bytes: list[bytes] = [b""] * len(segments)
@@ -231,7 +309,7 @@ def synthesize_emotional(config: dict, text: str, output_path: Path) -> Path:
 
     for emotion, indices in by_emotion.items():
         ref = resolve_emotion_ref(emotion, emotion_refs, default_ref)
-        speed = float(speed_map.get(emotion, 1.0))
+        speed = float(speed_map.get(emotion, 1.0)) * overage_mult * float(speed_factor)
         for i in indices:
             ordered_bytes[i] = _synthesize_bytes(config, segments[i].text, ref, speed_factor=speed)
 

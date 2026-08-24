@@ -1,10 +1,16 @@
 """外部推理服务生命周期管理（VLM / vLLM / SoVITS）。"""
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 
 import requests
+
+
+def _log_print(msg: str) -> None:
+    if os.environ.get("AI6657_DEBUG_PHASE3") == "1":
+        print(msg, flush=True)
 
 
 class ServiceManager:
@@ -12,7 +18,7 @@ class ServiceManager:
         self.config = config
         self._procs: dict[str, subprocess.Popen] = {}
         self._log_fhs: dict[str, object] = {}
-        self._svc_cfg: dict = config.get("runtime", {}).get("services", {})
+        self._svc_cfg: dict = (config.get("runtime") or {}).get("services", {})
 
 
     # ── 健康轮询 ──
@@ -116,22 +122,22 @@ class ServiceManager:
             return
         svc = self._svc_cfg.get(name, {})
         if not svc.get("enabled", True):
-            print(f"[services] {name} disabled in config, skip", flush=True)
+            _log_print(f"[services] {name} disabled in config, skip")
             return
         cmd = svc.get("start", "")
         if not cmd:
-            print(f"[services] {name} has no start command, skip", flush=True)
+            _log_print(f"[services] {name} has no start command, skip")
             return
 
         timeout = int(svc.get("startup_timeout_sec", 60))
-        print(f"[services] start {name}: {cmd}", flush=True)
+        _log_print(f"[services] start {name}: {cmd}")
 
         # 若服务已在运行（用户手动启动过），直接 health 确认即可
         health_url = self._health_url(name)
         identity = self._health_identity(name)
         already_up = self._poll_health(health_url, timeout_sec=3, interval=1.0, identity=identity)
         if already_up:
-            print(f"[services] {name} already up (skipping spawn)", flush=True)
+            _log_print(f"[services] {name} already up (skipping spawn)")
             # 记为 None 标记"已就绪但非我们启动"，stop 时不 kill
             self._procs[name] = None  # type: ignore[assignment]
         else:
@@ -162,7 +168,7 @@ class ServiceManager:
                     f"Check tmp/{name}.log for details."
                 )
 
-        print(f"[services] {name} healthy", flush=True)
+        _log_print(f"[services] {name} healthy")
 
 
     # ── 停止 ──
@@ -172,7 +178,7 @@ class ServiceManager:
         log_fh = self._log_fhs.pop(name, None)
         if proc is None:
             return  # 已就绪但非我们启动 / 已停
-        print(f"[services] stop {name}", flush=True)
+        _log_print(f"[services] stop {name}")
         try:
             proc.terminate()
             proc.wait(timeout=10)
