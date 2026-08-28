@@ -19,6 +19,15 @@ sbmachine 是一个把「一段 CS2 录像 + 它对应的 demo」变成「一段
 输出: output/sbmachine/ 下逐阶段 JSON + 逐局 WAV/MP4
 ```
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/ai6657-architecture.dark.png">
+  <img src="docs/diagrams/ai6657-architecture.light.png" alt="AI-6657 CS2 离线解说流水线架构图">
+</picture>
+
+**动图导览**（全图 → 主链路 → Phase3 调用层 → 可选后端，自动轮播）：
+
+![架构图导览](docs/diagrams/ai6657-architecture.gif)
+
 中间产物默认统一放 `output/sbmachine/`：
 
 ```text
@@ -102,6 +111,7 @@ tests/                # 契约 + 单元测试
 docs/                 # 维护者深度文档（架构 / 模块 / 测试）
 ```
 
+
 ## 已知问题
 
 因为纯粹个人独自编写，且时间有限，所以会出现诸多纯粹 vibe 和本机上没遇到的问题，如果你在使用中遇到问题，欢迎提 issue，我会尽量修复。
@@ -140,5 +150,6 @@ docs/                 # 维护者深度文档（架构 / 模块 / 测试）
 
 ## 致谢
 
-- [demoinfocs-golang](https://github.com/markus-wa/demoinfocs-golang) —— CS2 demo 解析能力构建于此（MIT License）。感谢 @markus-wa 及所有贡献者
+- [demoinfocs-golang](https://github.com/markus-wa/demoinfocs-golang) —— CS2 demo 解析能力构建于此（MIT License）。感谢 markus-wa 及所有贡献者
 - [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) —— GPT-SoVITS 音频生成能力构建于此（MIT License）。感谢 RVC-Boss 及所有贡献者
+- [archify](https://github.com/tt-a1i/archify) —— archify README文档的图片是基于此构建的（MIT License）。感谢 tt-a1i 及所有贡献者
