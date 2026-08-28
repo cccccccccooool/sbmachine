@@ -1,0 +1,386 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "AI-6657 CS2 离线解说流水线架构",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1260,
+      700
+    ],
+    "views": [
+      {
+        "id": "main-path",
+        "label": "主链路",
+        "focus": [
+          "config",
+          "run-all",
+          "upstream",
+          "p3a",
+          "p3b",
+          "p3c",
+          "p4",
+          "output"
+        ],
+        "note": "当前配置默认仅启用 Phase3a → 3b → 3c，产物经暂存后原子提升。"
+      },
+      {
+        "id": "llm-layer",
+        "label": "Phase3 调用层",
+        "focus": [
+          "p3a",
+          "p3b",
+          "p3c",
+          "llm-call",
+          "cloud-api",
+          "vllm"
+        ],
+        "note": "llm_shim 薄入口按回环地址分流到云端或本地适配器。"
+      },
+      {
+        "id": "optional-backends",
+        "label": "可选后端",
+        "focus": [
+          "llm-call",
+          "vllm",
+          "cloud-api",
+          "p4"
+        ],
+        "note": "本地 vLLM 与 GPT-SoVITS 仅在对应后端/阶段开启时拉起。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "config",
+      "type": "external",
+      "label": "操作者 / config/",
+      "sublabel": "pipeline.yaml · llm.yaml · .env",
+      "pos": [
+        40,
+        60
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "cloud-api",
+      "type": "cloud",
+      "label": "云端 LLM API",
+      "sublabel": "OpenAI Chat Completions · SSE",
+      "pos": [
+        40,
+        580
+      ],
+      "size": [
+        190,
+        72
+      ]
+    },
+    {
+      "id": "run-all",
+      "type": "backend",
+      "label": "run.py → run_all()",
+      "sublabel": "编排 · 运行锁 · 暂存事务",
+      "pos": [
+        40,
+        200
+      ],
+      "size": [
+        170,
+        72
+      ]
+    },
+    {
+      "id": "upstream",
+      "type": "backend",
+      "label": "上游采集 / Phase2",
+      "sublabel": "Demo 解析 · 视频对齐 · YOLO/OCR",
+      "pos": [
+        260,
+        200
+      ],
+      "size": [
+        180,
+        72
+      ]
+    },
+    {
+      "id": "p3a",
+      "type": "backend",
+      "label": "Phase3a 中性稿",
+      "sublabel": "规则规划 + LLM-A",
+      "pos": [
+        490,
+        200
+      ],
+      "size": [
+        170,
+        72
+      ]
+    },
+    {
+      "id": "p3b",
+      "type": "backend",
+      "label": "Phase3b 风格化",
+      "sublabel": "LLM-B · commentary v2/v3",
+      "pos": [
+        710,
+        200
+      ],
+      "size": [
+        180,
+        72
+      ]
+    },
+    {
+      "id": "llm-call",
+      "type": "backend",
+      "label": "LLM 调用层",
+      "sublabel": "llm_shim → llm_protocol → adapters",
+      "pos": [
+        490,
+        390
+      ],
+      "size": [
+        640,
+        72
+      ]
+    },
+    {
+      "id": "vllm",
+      "type": "external",
+      "label": "本地 vLLM",
+      "sublabel": "回环 :8000 · 可选",
+      "pos": [
+        290,
+        580
+      ],
+      "size": [
+        190,
+        72
+      ]
+    },
+    {
+      "id": "p3c",
+      "type": "backend",
+      "label": "Phase3c 渲染交接",
+      "sublabel": "LLM-C · render package v2",
+      "pos": [
+        940,
+        200
+      ],
+      "size": [
+        170,
+        72
+      ]
+    },
+    {
+      "id": "p4",
+      "type": "backend",
+      "label": "Phase4 合成",
+      "sublabel": "GPT-SoVITS / FFmpeg · 默认关闭",
+      "pos": [
+        980,
+        580
+      ],
+      "size": [
+        180,
+        72
+      ]
+    },
+    {
+      "id": "output",
+      "type": "database",
+      "label": "output/ 事务产物",
+      "sublabel": "run_manifest · WAV/MP4",
+      "pos": [
+        540,
+        580
+      ],
+      "size": [
+        190,
+        72
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Phase3 调用层",
+      "wraps": [
+        "llm-call"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "config-to-run",
+      "from": "config",
+      "to": "run-all",
+      "label": "阶段开关 · 后端选择",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "run-to-upstream",
+      "from": "run-all",
+      "to": "upstream",
+      "label": "编排",
+      "labelDy": -30,
+      "variant": "emphasis"
+    },
+    {
+      "id": "upstream-to-p3a",
+      "from": "upstream",
+      "to": "p3a",
+      "label": "rounds_with_yolo",
+      "labelDy": -30,
+      "variant": "emphasis"
+    },
+    {
+      "id": "p3a-to-p3b",
+      "from": "p3a",
+      "to": "p3b",
+      "label": "neutral v3/v4",
+      "labelDy": -30,
+      "variant": "emphasis"
+    },
+    {
+      "id": "p3b-to-p3c",
+      "from": "p3b",
+      "to": "p3c",
+      "label": "draft package",
+      "variant": "emphasis",
+      "labelDy": -30
+    },
+    {
+      "id": "p3c-to-p4",
+      "from": "p3c",
+      "to": "p4",
+      "label": "render package v2",
+      "variant": "emphasis",
+      "via": [
+        [
+          1185,
+          236
+        ],
+        [
+          1185,
+          616
+        ]
+      ],
+      "labelAt": [
+        1162,
+        536
+      ]
+    },
+    {
+      "id": "p4-to-output",
+      "from": "p4",
+      "to": "output",
+      "label": "WAV / MP4",
+      "labelDy": -30,
+      "variant": "emphasis"
+    },
+    {
+      "id": "p3a-to-llm",
+      "from": "p3a",
+      "to": "llm-call",
+      "label": "LLM-A 请求",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "p3b-to-llm",
+      "from": "p3b",
+      "to": "llm-call",
+      "label": "LLM-B 请求",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 24
+    },
+    {
+      "id": "p3c-to-llm",
+      "from": "p3c",
+      "to": "llm-call",
+      "label": "LLM-C 请求",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "llm-to-cloud",
+      "from": "llm-call",
+      "to": "cloud-api",
+      "label": "HTTPS · SSE",
+      "via": [
+        [
+          135,
+          426
+        ],
+        [
+          135,
+          580
+        ]
+      ],
+      "fromSide": "left",
+      "toSide": "top"
+    },
+    {
+      "id": "llm-to-vllm",
+      "from": "llm-call",
+      "to": "vllm",
+      "label": "loopback · 可选",
+      "variant": "dashed",
+      "via": [
+        [
+          810,
+          490
+        ],
+        [
+          385,
+          490
+        ],
+        [
+          385,
+          580
+        ]
+      ],
+      "fromSide": "bottom",
+      "toSide": "top"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "默认主链路",
+      "items": [
+        "当前配置仅启用 Phase3a → Phase3b → Phase3c",
+        "demo/视频/Phase2/Phase4 默认关闭，需先备好 rounds_with_yolo 输入"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "事实优先级",
+      "items": [
+        "DEM 是唯一硬事实源，禁止从画面、音频或 LLM 推断",
+        "fact_catalog 与 required_fact_ids 均由确定性规则层产出",
+        "LLM-A/B/C 均不得新增事实"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "事务与发布",
+      "items": [
+        "单次运行走 暂存 → checkpoint 原子提升",
+        "失败进入 output/error/<run_id>，第二个并发运行立即失败"
+      ]
+    }
+  ]
+}
